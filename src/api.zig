@@ -239,7 +239,12 @@ pub fn fetchUsage(
     defer client.deinit();
 
     const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{token}) catch return .network_error;
-    var body: std.Io.Writer.Allocating = .init(arena);
+
+    // Fixed buffer, not `Writer.Allocating`: the cap is enforced during the
+    // read itself (`drain` returns `error.WriteFailed` once `buffer` fills)
+    // rather than checked after an unbounded buffer has already grown.
+    var buffer: [response_limit]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
 
     const result = client.fetch(.{
         .location = .{ .url = usage_url },
@@ -248,8 +253,14 @@ pub fn fetchUsage(
             .authorization = .{ .override = bearer },
             .user_agent = .{ .override = user_agent },
         },
-        .response_writer = &body.writer,
-    }) catch return .network_error;
+        .response_writer = &writer,
+    }) catch |err| switch (err) {
+        // The body overran `buffer`: past `response_limit` is not a shape
+        // `parseResponse` will recognize anyway, so this is a parse error,
+        // not a network failure.
+        error.WriteFailed => return .parse_error,
+        else => return .network_error,
+    };
 
     switch (result.status) {
         .ok => {},
@@ -257,8 +268,7 @@ pub fn fetchUsage(
         .too_many_requests => return .rate_limited,
         else => return .network_error,
     }
-    if (body.written().len > response_limit) return .parse_error;
-    const snapshot = parseResponse(arena, body.written(), now) catch return .parse_error;
+    const snapshot = parseResponse(arena, writer.buffered(), now) catch return .parse_error;
     return .{ .ok = snapshot };
 }
 
@@ -318,6 +328,22 @@ test "parseResponse rejects a missing window" {
     );
 }
 
+test "parseResponse rejects wrong-typed fields" {
+    const arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    var arena_holder = arena_state;
+    defer arena_holder.deinit();
+    // `five_hour.utilization` is a string, which `readUtilization`'s type
+    // switch does not accept (only `.float` and `.integer` are), so this
+    // fails before `seven_day`'s int-typed `utilization` is even read.
+    const body =
+        \\{"five_hour":{"utilization":"high","resets_at":123},"seven_day":{"utilization":1,"resets_at":123}}
+    ;
+    try testing.expectError(
+        error.UnrecognizedShape,
+        parseResponse(arena_holder.allocator(), body, 0),
+    );
+}
+
 test "iso8601ToEpoch parses the unix epoch" {
     try testing.expectEqual(@as(i64, 0), try iso8601ToEpoch("1970-01-01T00:00:00Z"));
 }
@@ -331,6 +357,12 @@ test "iso8601ToEpoch parses fractional seconds with a zero UTC offset" {
         @as(i64, 1783926000),
         try iso8601ToEpoch("2026-07-13T07:00:00.402134+00:00"),
     );
+}
+
+test "iso8601ToEpoch parses a leap day" {
+    // Expected value from `date -u -d '2024-02-29T12:00:00Z' +%s`, 2024
+    // being a leap year (divisible by 4, not by 100).
+    try testing.expectEqual(@as(i64, 1709208000), try iso8601ToEpoch("2024-02-29T12:00:00Z"));
 }
 
 test "iso8601ToEpoch applies a nonzero offset" {
