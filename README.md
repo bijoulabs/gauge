@@ -64,14 +64,17 @@ zig build test
 ## Usage
 
 ```
-gauge [waybar|json] [--force] [--offline] [--max-age <secs>] [--version] [--help]
+gauge [waybar|json|setup-waybar] [--force] [--offline] [--max-age <secs>] [--version] [--help]
 ```
 
-Three subcommands, selected by the first positional argument:
+Four subcommands, selected by the first positional argument:
 
 - (default) human readable text for a terminal.
 - `waybar` a single line of JSON matching waybar's custom module contract.
 - `json` the raw cached state as JSON, with no formatting applied.
+- `setup-waybar` wires the waybar module in automatically; see
+  [Waybar setup](#waybar-setup). Ignores `--force`, `--offline`, and
+  `--max-age`.
 
 Flags:
 
@@ -90,12 +93,36 @@ Environment variables:
   `$HOME/.claude/.credentials.json`, the file Claude Code itself writes.
 - `GAUGE_USER_AGENT` overrides the `User-Agent` header sent with the usage
   request.
+- `GAUGE_WAYBAR_DIR` waybar config directory used by `setup-waybar`.
+  Defaults to `$HOME/.config/waybar`.
 
 ## Waybar setup
 
 ![gauge in waybar](docs/screenshot.png)
 
-Add `"custom/gauge"` to a modules list in your waybar config and merge in:
+Install gauge, then run:
+
+```bash
+gauge setup-waybar
+```
+
+It backs up both files first and refuses, printing manual steps, if your
+config does not look like it expects. Reload waybar afterward (`pkill
+waybar; waybar &`, or your compositor's restart mechanism), and the module
+should show usage as `5h NN% · wk NN%` with a tooltip on hover.
+
+The class turns `warn` at 70% utilization and `critical` at 90%, based on
+whichever of the two windows is higher; `stale` replaces the class when data
+is old or the last fetch failed.
+
+Run it again any time; it is idempotent, a config that already has the
+module is left untouched and reported as already set up.
+
+### Manual setup
+
+If you would rather wire it in by hand, or `setup-waybar` refused because
+your config does not match a stock shape, add `"custom/gauge"` to a modules
+list in your waybar config and merge in:
 
 ```jsonc
 "custom/gauge": {
@@ -115,12 +142,7 @@ Style the module's states in your waybar CSS:
 #custom-gauge.stale { opacity: 0.6; }
 ```
 
-The class turns `warn` at 70% utilization and `critical` at 90%, based on
-whichever of the two windows is higher; `stale` replaces the class when data
-is old or the last fetch failed.
-
-Reload waybar after wiring both in, and the module should show usage as
-`5h NN% · wk NN%` with a tooltip on hover.
+Reload waybar after wiring both in.
 
 ## Failure behavior
 

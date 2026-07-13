@@ -12,6 +12,7 @@ const state = @import("state.zig");
 const creds = @import("creds.zig");
 const api = @import("api.zig");
 const render = @import("render.zig");
+const waybar_setup = @import("waybar_setup.zig");
 const testing = std.testing;
 
 // Test reachability: `zig test` never calls `main`, so `run` and everything it
@@ -28,10 +29,14 @@ comptime {
     _ = @import("creds.zig");
     _ = @import("api.zig");
     _ = @import("render.zig");
+    _ = @import("waybar_setup.zig");
 }
 
 /// Output mode, selected by the (optional) first positional argument.
-const Mode = enum { human, waybar, json };
+/// `setup_waybar` is a one-shot side-effecting action rather than a render
+/// mode, but it shares the same dispatch slot since it is selected the same
+/// way: the first positional argument.
+const Mode = enum { human, waybar, json, setup_waybar };
 
 /// Parsed command line: defaults match the brief's contract (`human` mode, TTL from
 /// `policy.ttl_seconds_default`, every flag off).
@@ -56,6 +61,8 @@ fn parseArgs(argv: []const []const u8) error{BadUsage}!Args {
             args.mode = .waybar;
         } else if (std.mem.eql(u8, arg, "json")) {
             args.mode = .json;
+        } else if (std.mem.eql(u8, arg, "setup-waybar")) {
+            args.mode = .setup_waybar;
         } else if (std.mem.eql(u8, arg, "--force")) {
             args.force = true;
         } else if (std.mem.eql(u8, arg, "--offline")) {
@@ -210,6 +217,33 @@ fn releaseLock(io: Io, file: Io.File) void {
     file.close(io);
 }
 
+/// Runs the `setup-waybar` subcommand: resolves the waybar config directory,
+/// hands off to `waybar_setup.run` for the actual read/edit/write work, and
+/// prints its result. A directory that cannot be resolved (no `HOME` and no
+/// `GAUGE_WAYBAR_DIR`) or an unexpected allocator failure inside
+/// `waybar_setup.run` both collapse to exit 2, matching every other usage
+/// error in this file.
+fn runSetupWaybar(io: Io, arena: std.mem.Allocator, now: i64) u8 {
+    const dir_path = waybar_setup.waybarDirPath(arena) catch {
+        printErr(io, "gauge: could not resolve a waybar config directory (is $HOME set?)\n");
+        return 2;
+    };
+    const result = waybar_setup.run(io, arena, dir_path, now) catch {
+        printErr(io, "gauge: setup-waybar failed unexpectedly\n");
+        return 2;
+    };
+    switch (result) {
+        .ok => |message| {
+            printOut(io, message);
+            return 0;
+        },
+        .refused => |message| {
+            printErr(io, message);
+            return 2;
+        },
+    }
+}
+
 /// Writes `text` to stdout through a small buffered writer. Errors are silently
 /// dropped: a write failure on stdout mid-render (a closed pipe, most likely) is not
 /// something this program can meaningfully recover from or report further.
@@ -232,13 +266,18 @@ fn printErr(io: Io, text: []const u8) void {
 const help_text =
     \\gauge: Claude usage gauge for terminal and waybar.
     \\
-    \\Usage: gauge [waybar|json] [--force] [--offline] [--max-age <secs>]
-    \\             [--version] [--help]
+    \\Usage: gauge [waybar|json|setup-waybar] [--force] [--offline]
+    \\             [--max-age <secs>] [--version] [--help]
     \\
     \\Subcommands:
-    \\  (default)   Human readable text for a terminal.
-    \\  waybar      Single line JSON for waybar's custom module.
-    \\  json        Raw cached state as JSON.
+    \\  (default)     Human readable text for a terminal.
+    \\  waybar        Single line JSON for waybar's custom module.
+    \\  json          Raw cached state as JSON.
+    \\  setup-waybar  Wire the custom/gauge module into your waybar config
+    \\                and stylesheet automatically. Backs up both files
+    \\                first and refuses, printing manual steps, if your
+    \\                config does not look like it expects. Ignores
+    \\                --force, --offline, and --max-age.
     \\
     \\Flags:
     \\  --force            Refresh from upstream even if cached or backing off.
@@ -253,6 +292,8 @@ const help_text =
     \\  GAUGE_CREDENTIALS  Credentials file path. Default
     \\                     $HOME/.claude/.credentials.json.
     \\  GAUGE_USER_AGENT   User-Agent sent with the usage request.
+    \\  GAUGE_WAYBAR_DIR   Waybar config directory used by setup-waybar.
+    \\                     Default $HOME/.config/waybar.
     \\
 ;
 
@@ -265,7 +306,10 @@ fn run(init: std.process.Init) u8 {
 
     const argv = argvSlice(init, arena) catch return 2;
     const args = parseArgs(argv) catch {
-        printErr(io, "usage: gauge [waybar|json] [--force] [--offline] [--max-age <secs>]\n");
+        printErr(
+            io,
+            "usage: gauge [waybar|json|setup-waybar] [--force] [--offline] [--max-age <secs>]\n",
+        );
         return 2;
     };
     if (args.help) {
@@ -284,6 +328,13 @@ fn run(init: std.process.Init) u8 {
     // seconds ignored), matching what `state.State.fetched_at` and every
     // `policy`/`render` timestamp parameter already assume.
     const now: i64 = Io.Clock.real.now(io).toSeconds();
+
+    // setup-waybar is a one-shot side-effecting action, not a render: it never
+    // touches the usage cache, upstream, or `--force`/`--offline`/`--max-age`,
+    // so it dispatches here rather than falling through to the state/policy
+    // pipeline below.
+    if (args.mode == .setup_waybar) return runSetupWaybar(io, arena, now);
+
     const dir_path = state.stateDirPath(arena) catch return 2;
     var current = sanitizeState(state.load(io, arena, dir_path) orelse state.State{}, now);
 
@@ -321,6 +372,9 @@ fn run(init: std.process.Init) u8 {
         .human => render.human(arena, current, now, args.max_age),
         .waybar => render.waybar(arena, current, now, args.max_age),
         .json => render.raw(arena, current),
+        // `run` already returned above for `.setup_waybar`, before `dir_path`
+        // and the state/policy pipeline this switch renders from even exist.
+        .setup_waybar => unreachable,
     } catch return 2;
     printOut(io, output);
     // Only waybar's output needs an appended newline: `render.human` already ends
@@ -367,6 +421,13 @@ test "parseArgs rejects unknown and missing value" {
     try testing.expectError(error.BadUsage, parseArgs(&.{"frobnicate"}));
     try testing.expectError(error.BadUsage, parseArgs(&.{"--max-age"}));
     try testing.expectError(error.BadUsage, parseArgs(&.{ "--max-age", "0" }));
+}
+
+test "parseArgs recognizes setup-waybar and still parses (ignored) flags after it" {
+    const args = try parseArgs(&.{ "setup-waybar", "--force", "--offline" });
+    try testing.expectEqual(Mode.setup_waybar, args.mode);
+    try testing.expect(args.force);
+    try testing.expect(args.offline);
 }
 
 test "sanitizeState clamps a future fetched_at to now" {
