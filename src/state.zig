@@ -68,7 +68,11 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, dir_path: []const u8) ?State {
 /// Saves `state` to `dir_path/state.json`, creating `dir_path` (and any
 /// missing parents) as needed. Writes to a temp file first and renames it
 /// into place, so a reader calling `load` concurrently either sees the old
-/// file or the new one in full, never a partial write.
+/// file or the new one in full, never a partial write. This only guards
+/// against a concurrent `load`, not a concurrent `save`: it assumes the
+/// caller already holds the state directory's exclusive lock (see
+/// `main.zig`'s `acquireLock`), since two unsynchronized writers could still
+/// race the temp file and clobber each other's rename.
 pub fn save(io: std.Io, arena: std.mem.Allocator, dir_path: []const u8, state: State) !void {
     std.debug.assert(dir_path.len > 0);
     try std.Io.Dir.cwd().createDirPath(io, dir_path);

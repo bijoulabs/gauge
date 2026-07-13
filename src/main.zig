@@ -149,6 +149,30 @@ fn markFailure(next: *state.State, status: policy.Status, now: i64) state.State 
     return next.*;
 }
 
+/// Clamps `s`'s time fields to sane bounds relative to `now`, applied to every
+/// loaded state before it reaches `policy.decide` or `policy.isStale`.
+///
+/// NOTE: both `policy.decide` and `policy.isStale` assert `fetched_at <= now`,
+/// which normally holds since `fetched_at` is only ever set from a past `now`.
+/// A backwards clock step between invocations (an NTP correction, a VM resume, a
+/// manual clock change) breaks that: a state file written under the old, later
+/// clock reading loads with a `fetched_at` now in the future, and the assert
+/// panics on every subsequent run until the clock catches back up, a crash loop
+/// from a single bad state file. Clamping `fetched_at` to `now` here, at the load
+/// boundary, restores the invariant before it reaches policy. `backoff_until`
+/// gets the same treatment, capped at `now` plus the backoff ladder's longest
+/// rung (30 minutes, see `policy.nextBackoffUntil`'s ladder): without this, a
+/// state file written after a large forward clock jump could carry a
+/// `backoff_until` far in the future, and a later backwards step would freeze
+/// refreshes for as long as that stale deadline says, well past anything the
+/// ladder itself would ever schedule.
+fn sanitizeState(s: state.State, now: i64) state.State {
+    var sanitized = s;
+    sanitized.fetched_at = @min(sanitized.fetched_at, now);
+    sanitized.backoff_until = @min(sanitized.backoff_until, now + 30 * std.time.s_per_min);
+    return sanitized;
+}
+
 /// Attempts to acquire the exclusive refresh lock at `dir_path/state.lock`,
 /// returning `null` if the directory cannot be created, the lock file cannot be
 /// opened, or another process already holds the lock. A `null` return is not
@@ -241,13 +265,13 @@ fn run(init: std.process.Init) u8 {
 
     // NOTE: the brief's `std.time.timestamp()` does not exist in this Zig version;
     // `std.time` is now only the epoch/unit-conversion constants (see
-    // `/home/moe/zig/lib/std/time.zig`). Wall-clock reads go through `Io`'s clock
-    // API instead: `Io.Clock.real` is documented as Unix epoch seconds (leap
+    // std/time.zig in the Zig source tree). Wall-clock reads go through `Io`'s
+    // clock API instead: `Io.Clock.real` is documented as Unix epoch seconds (leap
     // seconds ignored), matching what `state.State.fetched_at` and every
     // `policy`/`render` timestamp parameter already assume.
     const now: i64 = Io.Clock.real.now(io).toSeconds();
     const dir_path = state.stateDirPath(arena) catch return 2;
-    var current = state.load(io, arena, dir_path) orelse state.State{};
+    var current = sanitizeState(state.load(io, arena, dir_path) orelse state.State{}, now);
 
     const decision = policy.decide(
         now,
@@ -261,6 +285,9 @@ fn run(init: std.process.Init) u8 {
         if (acquireLock(io, arena, dir_path)) |lock_file| {
             defer releaseLock(io, lock_file);
             current = refresh(io, arena, current, now);
+            // A failed save must never break rendering: the freshly fetched `current`
+            // still renders below from memory even if it never made it to disk, and
+            // the next invocation just refreshes again once the cache looks stale.
             state.save(io, arena, dir_path, current) catch {};
         }
         // Else: another invocation is refreshing right now. Serve what we have.
@@ -282,7 +309,10 @@ fn run(init: std.process.Init) u8 {
         .json => render.raw(arena, current),
     } catch return 2;
     printOut(io, output);
-    if (args.mode != .json) printOut(io, "\n");
+    // Only waybar's output needs an appended newline: `render.human` already ends
+    // with one, and `render.raw`'s JSON is deliberately left unterminated so a
+    // caller piping it elsewhere gets exactly the bytes on disk.
+    if (args.mode == .waybar) printOut(io, "\n");
     return 0;
 }
 
@@ -303,6 +333,10 @@ fn run(init: std.process.Init) u8 {
 // used in place of a locally constructed `ArenaAllocator`, since one is already
 // provided and manual `deinit` would run into the same "no unwind before
 // `std.process.exit`" question `main` itself sidesteps.
+///
+/// Entry point: runs the CLI via `run` and translates a nonzero result into the
+/// real process exit code. A zero result needs no translation, falling off the
+/// end of `!void` already exits 0.
 pub fn main(init: std.process.Init) !void {
     const code = run(init);
     if (code != 0) std.process.exit(code);
@@ -319,4 +353,23 @@ test "parseArgs rejects unknown and missing value" {
     try testing.expectError(error.BadUsage, parseArgs(&.{"frobnicate"}));
     try testing.expectError(error.BadUsage, parseArgs(&.{"--max-age"}));
     try testing.expectError(error.BadUsage, parseArgs(&.{ "--max-age", "0" }));
+}
+
+test "sanitizeState clamps a future fetched_at to now" {
+    const s = state.State{ .fetched_at = 5000 };
+    const sanitized = sanitizeState(s, 1000);
+    try testing.expectEqual(@as(i64, 1000), sanitized.fetched_at);
+}
+
+test "sanitizeState clamps an oversized backoff_until to the ladder cap" {
+    const s = state.State{ .backoff_until = 1000 + 999 * std.time.s_per_min };
+    const sanitized = sanitizeState(s, 1000);
+    try testing.expectEqual(@as(i64, 1000 + 30 * std.time.s_per_min), sanitized.backoff_until);
+}
+
+test "sanitizeState leaves in-range fields untouched" {
+    const s = state.State{ .fetched_at = 900, .backoff_until = 950 };
+    const sanitized = sanitizeState(s, 1000);
+    try testing.expectEqual(@as(i64, 900), sanitized.fetched_at);
+    try testing.expectEqual(@as(i64, 950), sanitized.backoff_until);
 }

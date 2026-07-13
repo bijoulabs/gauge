@@ -43,7 +43,11 @@ fn pct(utilization: f64) i64 {
 /// itself, `tooltip` for the hover detail, `class` for CSS styling (the
 /// utilization band, or `stale` when the cache has gone stale per
 /// `policy.isStale`, which overrides the band), and `percentage` for
-/// waybar's built-in progress indicator.
+/// waybar's built-in progress indicator. When `s.fetched_at` is zero (no
+/// cached state has ever been written), the tooltip's age line reads "no data
+/// yet" instead of a relative duration: an epoch-0 `fetched_at` would
+/// otherwise format as something like "20647d 3h ago", which is technically
+/// correct and practically nonsense.
 pub fn waybar(arena: std.mem.Allocator, s: state.State, now: i64, ttl: i64) ![]u8 {
     const worst = @max(s.five_hour.utilization, s.seven_day.utilization);
     const stale = policy.isStale(now, s.fetched_at, ttl, s.last_status);
@@ -55,13 +59,17 @@ pub fn waybar(arena: std.mem.Allocator, s: state.State, now: i64, ttl: i64) ![]u
     const text = try std.fmt.allocPrint(arena, "5h {d}% \u{b7} wk {d}%", .{
         pct(s.five_hour.utilization), pct(s.seven_day.utilization),
     });
+    const age = if (s.fetched_at == 0)
+        try arena.dupe(u8, "no data yet")
+    else
+        try std.fmt.allocPrint(arena, "as of {s} ago", .{try relative(arena, now - s.fetched_at)});
     const tooltip = try std.fmt.allocPrint(
         arena,
-        "5h: {d}% resets in {s}\nweek: {d}% resets in {s}\nstatus: {s}, as of {s} ago",
+        "5h: {d}% resets in {s}\nweek: {d}% resets in {s}\nstatus: {s}, {s}",
         .{
             pct(s.five_hour.utilization), try relative(arena, s.five_hour.resets_at - now),
             pct(s.seven_day.utilization), try relative(arena, s.seven_day.resets_at - now),
-            @tagName(s.last_status),      try relative(arena, now - s.fetched_at),
+            @tagName(s.last_status),      age,
         },
     );
     const Payload = struct {
@@ -150,4 +158,17 @@ test "waybar marks stale with suffix class" {
     const line = try waybar(arena, s, 1060, 180);
     const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{});
     try testing.expectEqualStrings("stale", parsed.object.get("class").?.string);
+}
+
+test "waybar tooltip reads no data yet for a zero fetched_at" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = testState();
+    s.fetched_at = 0;
+    const line = try waybar(arena, s, 1060, 180);
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{});
+    const tooltip = parsed.object.get("tooltip").?.string;
+    try testing.expect(std.mem.indexOf(u8, tooltip, "no data yet") != null);
+    try testing.expect(std.mem.indexOf(u8, tooltip, "ago") == null);
 }

@@ -82,7 +82,10 @@ test "extracts access token and ignores everything else" {
 test "missing claudeAiOauth is MalformedCredentials" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    try testing.expectError(error.MalformedCredentials, extractAccessToken(arena_state.allocator(), "{}"));
+    try testing.expectError(
+        error.MalformedCredentials,
+        extractAccessToken(arena_state.allocator(), "{}"),
+    );
 }
 
 // NOTE: mirrors the `setenv`/`unsetenv` reconciliation from `state.zig`'s

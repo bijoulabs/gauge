@@ -69,17 +69,27 @@ fn firstField(object: std.json.Value, keys: []const []const u8) ?std.json.Value 
 }
 
 /// Reads a utilization value from `window` and normalizes it to a 0.0-1.0
-/// ratio. The live endpoint reports utilization as a 0-100 percentage (the
-/// fixture's `"utilization": 41.0` means 41%), but a float already in
-/// 0.0-1.0 passes through unchanged so a future API version that switches to
-/// a plain ratio does not silently get divided twice.
+/// ratio. The endpoint's convention is confirmed to be a 0-100 percentage for
+/// every raw value it emits, float or integer alike (the fixture's
+/// `"utilization": 3.0` means 3%, `41.0` means 41%), so this always divides by
+/// 100 rather than guessing at the value's shape from its magnitude.
+///
+/// A raw value outside a sane percent range, negative or over 1000, is
+/// rejected here rather than divided and returned: a value that implausible
+/// is a reshaped or corrupted field, not real usage data, and `firstField`
+/// returning `null` sends `parseResponse` down the `error.UnrecognizedShape`
+/// path so `fetchUsage` falls back to `.parse_error` and keeps serving
+/// whatever stale snapshot it already has instead of persisting garbage that
+/// would later trip `render.pct`'s `utilization >= 0.0` assert.
 fn readUtilization(window: std.json.Value) ?f64 {
     const value = firstField(window, &utilization_keys) orelse return null;
-    return switch (value) {
-        .float => |f| if (f > 1.0) f / 100.0 else f,
-        .integer => |i| @as(f64, @floatFromInt(i)) / 100.0,
-        else => null,
+    const raw: f64 = switch (value) {
+        .float => |f| f,
+        .integer => |i| @floatFromInt(i),
+        else => return null,
     };
+    if (raw < 0 or raw > 1000) return null;
+    return raw / 100.0;
 }
 
 /// Reads a reset time from `window` as Unix epoch seconds. The value may
@@ -291,21 +301,62 @@ test "empty object is parse error" {
     const arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     var arena_holder = arena_state;
     defer arena_holder.deinit();
-    try testing.expectError(error.UnrecognizedShape, parseResponse(arena_holder.allocator(), "{}", 0));
+    try testing.expectError(
+        error.UnrecognizedShape,
+        parseResponse(arena_holder.allocator(), "{}", 0),
+    );
 }
 
 test "parseResponse accepts community-alternate key names" {
     const arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     var arena_holder = arena_state;
     defer arena_holder.deinit();
-    const body =
-        \\{"session_usage_5h":{"used_pct":0.5,"reset_time":1000},"weekly_usage":{"used_pct":0.25,"reset_at":2000}}
-    ;
+    // Raw values are percentages, per the endpoint's confirmed convention (see
+    // `readUtilization`), so 50.0 and 25.0 here mean 50% and 25%, not 0.5 and 0.25
+    // as a prior version of this test assumed under the now-removed pass-through
+    // heuristic.
+    const body = "{\"session_usage_5h\":{\"used_pct\":50.0,\"reset_time\":1000}," ++
+        "\"weekly_usage\":{\"used_pct\":25.0,\"reset_at\":2000}}";
     const snap = try parseResponse(arena_holder.allocator(), body, 0);
     try testing.expectEqual(@as(f64, 0.5), snap.five_hour_utilization);
     try testing.expectEqual(@as(i64, 1000), snap.five_hour_resets_at);
     try testing.expectEqual(@as(f64, 0.25), snap.seven_day_utilization);
     try testing.expectEqual(@as(i64, 2000), snap.seven_day_resets_at);
+}
+
+test "parseResponse rejects a negative raw utilization" {
+    const arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    var arena_holder = arena_state;
+    defer arena_holder.deinit();
+    const body = "{\"five_hour\":{\"utilization\":-0.5,\"resets_at\":123}," ++
+        "\"seven_day\":{\"utilization\":1,\"resets_at\":123}}";
+    try testing.expectError(
+        error.UnrecognizedShape,
+        parseResponse(arena_holder.allocator(), body, 0),
+    );
+}
+
+test "parseResponse rejects an implausibly large raw utilization" {
+    const arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    var arena_holder = arena_state;
+    defer arena_holder.deinit();
+    const body = "{\"five_hour\":{\"utilization\":5000,\"resets_at\":123}," ++
+        "\"seven_day\":{\"utilization\":1,\"resets_at\":123}}";
+    try testing.expectError(
+        error.UnrecognizedShape,
+        parseResponse(arena_holder.allocator(), body, 0),
+    );
+}
+
+test "parseResponse boundary: raw 1.0 is 1 percent, not 100 percent" {
+    const arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    var arena_holder = arena_state;
+    defer arena_holder.deinit();
+    const body = "{\"five_hour\":{\"utilization\":1.0,\"resets_at\":123}," ++
+        "\"seven_day\":{\"utilization\":1.0,\"resets_at\":456}}";
+    const snap = try parseResponse(arena_holder.allocator(), body, 0);
+    try testing.expectApproxEqAbs(@as(f64, 0.01), snap.five_hour_utilization, 1e-9);
+    try testing.expectApproxEqAbs(@as(f64, 0.01), snap.seven_day_utilization, 1e-9);
 }
 
 test "parseResponse rejects malformed json" {
@@ -322,9 +373,10 @@ test "parseResponse rejects a missing window" {
     const arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     var arena_holder = arena_state;
     defer arena_holder.deinit();
+    const body = "{\"five_hour\":{\"utilization\":1.0,\"resets_at\":1}}";
     try testing.expectError(
         error.UnrecognizedShape,
-        parseResponse(arena_holder.allocator(), "{\"five_hour\":{\"utilization\":1.0,\"resets_at\":1}}", 0),
+        parseResponse(arena_holder.allocator(), body, 0),
     );
 }
 
@@ -335,9 +387,8 @@ test "parseResponse rejects wrong-typed fields" {
     // `five_hour.utilization` is a string, which `readUtilization`'s type
     // switch does not accept (only `.float` and `.integer` are), so this
     // fails before `seven_day`'s int-typed `utilization` is even read.
-    const body =
-        \\{"five_hour":{"utilization":"high","resets_at":123},"seven_day":{"utilization":1,"resets_at":123}}
-    ;
+    const body = "{\"five_hour\":{\"utilization\":\"high\",\"resets_at\":123}," ++
+        "\"seven_day\":{\"utilization\":1,\"resets_at\":123}}";
     try testing.expectError(
         error.UnrecognizedShape,
         parseResponse(arena_holder.allocator(), body, 0),
