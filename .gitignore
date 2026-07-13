@@ -1,3 +1,4 @@
 superpowers/
 zig-out/
 .zig-cache/
+.superpowers/
