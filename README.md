@@ -82,17 +82,31 @@ Environment variables:
 
 ## Waybar setup
 
-![gauge in waybar](waybar/screenshot.png)
+![gauge in waybar](docs/screenshot.png)
 
-Two files under `waybar/` in this repo are meant to be copied or referenced
-from your own waybar config:
+Add `"custom/gauge"` to a modules list in your waybar config and merge in:
 
-- `waybar/config-snippet.jsonc` the module definition. Add `"custom/gauge"`
-  to your modules list and merge in the module config.
-- `waybar/style-snippet.css` CSS classes for the `warn`, `critical`, and
-  `stale` states the module can be in.
+```jsonc
+"custom/gauge": {
+    "exec": "gauge waybar",
+    "return-type": "json",
+    "interval": 30,
+    "tooltip": true
+}
+```
 
-The module class turns warn at 70% utilization and critical at 90%, based on whichever of the two windows is higher; stale replaces the class when data is old or the last fetch failed.
+Style the module's states in your waybar CSS:
+
+```css
+#custom-gauge { padding: 0 8px; }
+#custom-gauge.warn { color: #e5c07b; }
+#custom-gauge.critical { color: #e06c75; }
+#custom-gauge.stale { opacity: 0.6; }
+```
+
+The class turns `warn` at 70% utilization and `critical` at 90%, based on
+whichever of the two windows is higher; `stale` replaces the class when data
+is old or the last fetch failed.
 
 Reload waybar after wiring both in, and the module should show usage as
 `5h NN% · wk NN%` with a tooltip on hover.
