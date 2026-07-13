@@ -111,7 +111,15 @@ pub fn stateDirPath(arena: std.mem.Allocator) ![]u8 {
 // internally on WASI/Emscripten (see `std.process.Environ.createMap`), just
 // without the intermediate `Init` plumbing this module's interface has no
 // room for.
-fn envVarOwned(arena: std.mem.Allocator, key: []const u8) std.mem.Allocator.Error!?[]u8 {
+///
+/// Reads a single environment variable by walking libc's `environ` global,
+/// returning a copy owned by `arena`. `null` means the variable is entirely
+/// unset; an explicitly empty value comes back as a zero-length slice, not
+/// `null`, so callers that want to treat empty as unset (see `stateDirPath`)
+/// do that themselves rather than losing the distinction here. `pub` so
+/// `creds.zig` can reuse it for `GAUGE_CREDENTIALS`/`HOME` instead of
+/// duplicating the `environ` walk.
+pub fn envVarOwned(arena: std.mem.Allocator, key: []const u8) std.mem.Allocator.Error!?[]u8 {
     var index: usize = 0;
     while (std.c.environ[index]) |entry| : (index += 1) {
         const entry_slice = std.mem.span(entry);

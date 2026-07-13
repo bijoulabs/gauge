@@ -6,6 +6,7 @@ const Io = std.Io;
 comptime {
     _ = @import("policy.zig");
     _ = @import("state.zig");
+    _ = @import("creds.zig");
 }
 
 // NOTE: The brief's `main() !void` and `File.stdout().writer(&buf)` do not match this
