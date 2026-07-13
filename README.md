@@ -5,6 +5,17 @@ you have used, for a terminal or for a waybar status bar. It reads the same
 underlying data as Claude Code's `/usage` command: the 5 hour and 7 day
 rate-limit windows tied to your account.
 
+## Quick start
+
+With [Zig](https://ziglang.org/download/) installed and Claude Code logged in:
+
+```bash
+git clone https://github.com/moesy/gauge && cd gauge && zig build -Doptimize=ReleaseSafe && install -m755 zig-out/bin/gauge ~/.local/bin/ && gauge
+```
+
+That builds the binary, installs it to `~/.local/bin`, and prints your
+current usage. See below for the waybar module.
+
 ## Disclaimer
 
 gauge talks to an endpoint Anthropic has not published or documented. It is
