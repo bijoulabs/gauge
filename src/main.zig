@@ -5,6 +5,7 @@ const Io = std.Io;
 // walks the whole suite, per the zig-style testing convention.
 comptime {
     _ = @import("policy.zig");
+    _ = @import("state.zig");
 }
 
 // NOTE: The brief's `main() !void` and `File.stdout().writer(&buf)` do not match this

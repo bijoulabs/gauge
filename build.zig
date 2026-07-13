@@ -10,6 +10,12 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            // NOTE: state.zig reads environment variables via libc's `environ`
+            // global (see the reconciliation note in src/state.zig): this Zig
+            // version's std.process has no standalone env accessor outside the
+            // Init-threaded Environ API, which stateDirPath's committed
+            // signature has no room for.
+            .link_libc = true,
         }),
     });
     b.installArtifact(exe);
