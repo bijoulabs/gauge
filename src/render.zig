@@ -26,6 +26,7 @@ pub fn relative(arena: std.mem.Allocator, delta_seconds: i64) ![]u8 {
     // fills it with '+' rather than '0' when the value is non-negative.
     // `minutes` is always in `[0, 59]` here (an `@mod` result), so cast to
     // `u64` to sidestep the signed-format quirk instead of hand-padding.
+    std.debug.assert(minutes >= 0);
     const minutes_unsigned: u64 = @intCast(minutes);
     if (days > 0) return std.fmt.allocPrint(arena, "{d}d {d}h", .{ days, hours });
     if (hours > 0) return std.fmt.allocPrint(arena, "{d}h {d:0>2}m", .{ hours, minutes_unsigned });
@@ -34,6 +35,7 @@ pub fn relative(arena: std.mem.Allocator, delta_seconds: i64) ![]u8 {
 
 /// Converts a utilization ratio in `[0, 1]` to a whole percentage for display.
 fn pct(utilization: f64) i64 {
+    std.debug.assert(utilization >= 0.0);
     return @intFromFloat(@round(utilization * 100.0));
 }
 
