@@ -10,11 +10,15 @@ rate-limit windows tied to your account.
 With [Zig](https://ziglang.org/download/) installed and Claude Code logged in:
 
 ```bash
-git clone https://github.com/moesy/gauge && cd gauge && zig build -Doptimize=ReleaseSafe && install -m755 zig-out/bin/gauge ~/.local/bin/ && gauge
+git clone https://github.com/moesy/gauge
+cd gauge
+zig build -Doptimize=ReleaseSafe
+install -m755 zig-out/bin/gauge ~/.local/bin/
+gauge
 ```
 
 That builds the binary, installs it to `~/.local/bin`, and prints your
-current usage. See below for the waybar module.
+current usage. `gauge setup-waybar` wires the waybar module.
 
 ## Disclaimer
 
