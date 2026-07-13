@@ -90,6 +90,8 @@ from your own waybar config:
 - `waybar/style-snippet.css` CSS classes for the `warn`, `critical`, and
   `stale` states the module can be in.
 
+The module class turns warn at 70% utilization and critical at 90%, based on whichever of the two windows is higher; stale replaces the class when data is old or the last fetch failed.
+
 Reload waybar after wiring both in, and the module should show usage as
 `5h NN% · wk NN%` with a tooltip on hover.
 
