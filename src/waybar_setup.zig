@@ -34,9 +34,12 @@ pub const ConfigOutcome = union(enum) {
 /// logic knows how to edit safely.
 pub const ConfigError = error{
     NoModulesRight,
-    NoOpenBracket,
     NoCloseBracket,
     NestedBracket,
+    /// A `//` or `/*` comment sits between the array's `]` and the comma (or
+    /// where a comma would go). Rewriting around a comment safely needs a
+    /// real jsonc parser; refusing is simpler and safer than guessing.
+    CommentAdjacentComma,
 };
 
 /// The module definition inserted right after the `modules-right` array,
@@ -53,19 +56,21 @@ const module_block =
 /// array as the first entry, then inserts `module_block` right after the
 /// array, or reports the edit is already done.
 ///
-/// Locates the array by finding `"modules-right"`, then the first `[` after
-/// it, then the next `]`. Module name arrays contain no nested brackets in a
-/// stock config (they are flat lists of strings), so a `[` found before that
-/// `]` means the shape is not what this function knows how to edit, and it
-/// refuses via `ConfigError` rather than guess. This is the safety boundary
-/// the brief calls out: `run` calls this once and never retries with a
-/// looser rule on refusal.
-pub fn editConfig(arena: Allocator, text: []const u8) (ConfigError || Allocator.Error)!ConfigOutcome {
-    if (std.mem.indexOf(u8, text, "\"custom/gauge\"") != null) return .already_done;
+/// Locates the array via `findModulesRightOpen`, then the next `]`. Module
+/// name arrays contain no nested brackets in a stock config (they are flat
+/// lists of strings), so a `[` found before that `]` means the shape is not
+/// what this function knows how to edit, and it refuses via `ConfigError`
+/// rather than guess. This is the safety boundary the brief calls out: `run`
+/// calls this once and never retries with a looser rule on refusal.
+pub fn editConfig(
+    arena: Allocator,
+    text: []const u8,
+) (ConfigError || Allocator.Error)!ConfigOutcome {
+    if (alreadyHasCustomGauge(text)) return .already_done;
 
-    const key_idx = std.mem.indexOf(u8, text, "\"modules-right\"") orelse return error.NoModulesRight;
-    const open = std.mem.indexOfScalarPos(u8, text, key_idx, '[') orelse return error.NoOpenBracket;
-    const close = std.mem.indexOfScalarPos(u8, text, open + 1, ']') orelse return error.NoCloseBracket;
+    const open = findModulesRightOpen(text) orelse return error.NoModulesRight;
+    const close = std.mem.indexOfScalarPos(u8, text, open + 1, ']') orelse
+        return error.NoCloseBracket;
     if (std.mem.indexOfScalarPos(u8, text, open + 1, '[')) |nested| {
         if (nested < close) return error.NestedBracket;
     }
@@ -94,6 +99,17 @@ pub fn editConfig(arena: Allocator, text: []const u8) (ConfigError || Allocator.
 
     const after_bracket = close_shifted + 1;
     const ws_end = skipWhitespace(with_entry, after_bracket);
+    // A `//` or `/*` comment between the array's `]` and its comma (or where
+    // a comma would go) means this function cannot tell, from text alone,
+    // whether a comma already follows without also parsing the comment.
+    // Guessing wrong emits either a missing or a doubled comma, both of
+    // which fail waybar's jsoncpp parser silently from gauge's point of
+    // view, so this refuses rather than rewrite around a comment.
+    if (ws_end + 1 < with_entry.len and with_entry[ws_end] == '/' and
+        (with_entry[ws_end + 1] == '/' or with_entry[ws_end + 1] == '*'))
+    {
+        return error.CommentAdjacentComma;
+    }
     const has_comma = ws_end < with_entry.len and with_entry[ws_end] == ',';
     const insert_at = if (has_comma) ws_end + 1 else after_bracket;
     // A comma already follows the array (the common case: modules-right is
@@ -116,6 +132,60 @@ fn skipWhitespace(text: []const u8, start: usize) usize {
     var i = start;
     while (i < text.len and std.ascii.isWhitespace(text[i])) : (i += 1) {}
     return i;
+}
+
+/// Finds the `[` that opens the real `modules-right` array's value, or
+/// `null` if none qualifies.
+///
+/// A raw substring search for `"modules-right"` is hijacked by an earlier
+/// comment or string value that happens to contain that text (a `[` inside
+/// or before such a false match would then be mistaken for the array's own
+/// bracket). This instead walks every occurrence of the key text in order
+/// and accepts the first one followed, modulo whitespace, by `:` and then
+/// `[`, the shape only a real `"modules-right": [...]` key has. The loop is
+/// bounded: `search_from` strictly increases toward `text.len` every
+/// iteration, so it terminates within `text.len` steps even on pathological
+/// input.
+fn findModulesRightOpen(text: []const u8) ?usize {
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, text, search_from, "\"modules-right\"")) |key_idx| {
+        const after_key = key_idx + "\"modules-right\"".len;
+        const colon_at = skipWhitespace(text, after_key);
+        if (colon_at < text.len and text[colon_at] == ':') {
+            const bracket_at = skipWhitespace(text, colon_at + 1);
+            if (bracket_at < text.len and text[bracket_at] == '[') return bracket_at;
+        }
+        search_from = key_idx + 1;
+    }
+    return null;
+}
+
+/// Reports whether `text` already has a real `"custom/gauge"` entry: a
+/// module definition key (`"custom/gauge":`) or an array entry (preceded by
+/// `[` or `,` and followed by `,` or `]`, modulo whitespace on either side).
+///
+/// A raw substring search treats `"custom/gauge"` inside a comment (`// see
+/// "custom/gauge" below`) as proof the setup is already done, which then
+/// skips the real edit forever. This walks every occurrence in order and
+/// only accepts one that has the shape of a real key or array entry, same
+/// bounded-loop approach as `findModulesRightOpen`.
+fn alreadyHasCustomGauge(text: []const u8) bool {
+    const key = "\"custom/gauge\"";
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, text, search_from, key)) |idx| {
+        const after = idx + key.len;
+        const ws_end = skipWhitespace(text, after);
+        const is_key = ws_end < text.len and text[ws_end] == ':';
+        const followed_like_entry = ws_end < text.len and
+            (text[ws_end] == ',' or text[ws_end] == ']');
+        var before = idx;
+        while (before > 0 and std.ascii.isWhitespace(text[before - 1])) : (before -= 1) {}
+        const preceded_like_entry = before > 0 and
+            (text[before - 1] == '[' or text[before - 1] == ',');
+        if (is_key or (followed_like_entry and preceded_like_entry)) return true;
+        search_from = idx + 1;
+    }
+    return false;
 }
 
 /// Outcome of editing style.css's text.
@@ -204,7 +274,19 @@ const manual_instructions =
 /// `Io.Dir.copyFile`, since the caller already holds `text` from the read
 /// that fed `editConfig`/`editCss`; `copyFile` would re-open and re-read a
 /// file already in hand.
-fn backupAndWrite(io: Io, arena: Allocator, dir_path: []const u8, name: []const u8, now: i64, text: []const u8, new_text: []const u8) !void {
+///
+/// LIMITATION: if `path` is itself a symlink, `rename` replaces the symlink
+/// with a regular file rather than writing through it to the link's target;
+/// out of scope here, and not addressed.
+fn backupAndWrite(
+    io: Io,
+    arena: Allocator,
+    dir_path: []const u8,
+    name: []const u8,
+    now: i64,
+    text: []const u8,
+    new_text: []const u8,
+) !void {
     std.debug.assert(now >= 0);
     const backup_name = try std.fmt.allocPrint(arena, "{s}.bak.{d}", .{ name, now });
     const backup_path = try std.fs.path.join(arena, &.{ dir_path, backup_name });
@@ -219,7 +301,15 @@ fn backupAndWrite(io: Io, arena: Allocator, dir_path: []const u8, name: []const 
 /// Writes `new_text` to `dir_path/name` atomically, with no preceding
 /// backup: used only when the file did not previously exist, so there is
 /// nothing to back up.
-fn writeNew(io: Io, arena: Allocator, dir_path: []const u8, name: []const u8, new_text: []const u8) !void {
+///
+/// LIMITATION: same symlink caveat as `backupAndWrite`, see its doc comment.
+fn writeNew(
+    io: Io,
+    arena: Allocator,
+    dir_path: []const u8,
+    name: []const u8,
+    new_text: []const u8,
+) !void {
     const path = try std.fs.path.join(arena, &.{ dir_path, name });
     const tmp_path = try std.fmt.allocPrint(arena, "{s}.tmp", .{path});
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp_path, .data = new_text });
@@ -230,22 +320,38 @@ fn writeNew(io: Io, arena: Allocator, dir_path: []const u8, name: []const u8, ne
 /// module into both via `editConfig`/`editCss`, and reports what it did.
 /// `now` (Unix epoch seconds) seeds backup filenames' timestamp suffix.
 ///
-/// No config.jsonc at `dir_path` is a refusal: waybar is not set up there,
-/// or `dir_path` is wrong, and there is nothing safe to edit. A missing
-/// style.css is not a refusal, `editCss` handles it directly. A config that
-/// fails `editConfig` (unfamiliar shape) is also a refusal, and nothing is
-/// written, not even to style.css: a half-applied setup is worse than none.
+/// A missing config.jsonc (`error.FileNotFound`) is a refusal: waybar is not
+/// set up at `dir_path`, or `dir_path` is wrong, and there is nothing safe
+/// to edit. Any other config.jsonc read error (permission denied, a
+/// dangling symlink, a file past `read_limit`) is also a refusal, since only
+/// `FileNotFound` means "nothing is here to overwrite"; every other error
+/// means a real file exists and could not be read, and treating that as
+/// "missing" would silently discard it on write. A missing style.css is not
+/// a refusal, `editCss` handles it directly by treating it as empty; other
+/// style.css read errors refuse for the same reason as config.jsonc. A
+/// config that fails `editConfig` (unfamiliar shape) is also a refusal, and
+/// nothing is written, not even to style.css: a half-applied setup is worse
+/// than none.
+///
+/// LIMITATION: two concurrent `run` calls against the same `dir_path` are
+/// not locked against each other; out of scope here, and not addressed.
 pub fn run(io: Io, arena: Allocator, dir_path: []const u8, now: i64) !Result {
     std.debug.assert(dir_path.len > 0);
     std.debug.assert(now >= 0);
 
     const config_path = try std.fs.path.join(arena, &.{ dir_path, config_file_name });
-    const config_text = Io.Dir.cwd().readFileAlloc(io, config_path, arena, read_limit) catch {
-        return .{ .refused = try std.fmt.allocPrint(
+    const config_read = Io.Dir.cwd().readFileAlloc(io, config_path, arena, read_limit);
+    const config_text = config_read catch |err| switch (err) {
+        error.FileNotFound => return .{ .refused = try std.fmt.allocPrint(
             arena,
             "gauge: no config.jsonc found at {s}\n\n{s}",
             .{ config_path, manual_instructions },
-        ) };
+        ) },
+        else => return .{ .refused = try std.fmt.allocPrint(
+            arena,
+            "gauge: could not read {s} ({s}), refusing to edit it\n\n{s}",
+            .{ config_path, @errorName(err), manual_instructions },
+        ) },
     };
 
     const config_outcome = editConfig(arena, config_text) catch |err| {
@@ -257,7 +363,15 @@ pub fn run(io: Io, arena: Allocator, dir_path: []const u8, now: i64) !Result {
     };
 
     const style_path = try std.fs.path.join(arena, &.{ dir_path, style_file_name });
-    const style_text: ?[]const u8 = Io.Dir.cwd().readFileAlloc(io, style_path, arena, read_limit) catch null;
+    const style_read = Io.Dir.cwd().readFileAlloc(io, style_path, arena, read_limit);
+    const style_text: ?[]const u8 = style_read catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return .{ .refused = try std.fmt.allocPrint(
+            arena,
+            "gauge: could not read {s} ({s}), refusing to edit it\n\n{s}",
+            .{ style_path, @errorName(err), manual_instructions },
+        ) },
+    };
     const css_outcome = try editCss(arena, style_text orelse "");
 
     // Up to two lines per file (backed up, then edited) plus the closing
@@ -272,7 +386,11 @@ pub fn run(io: Io, arena: Allocator, dir_path: []const u8, now: i64) !Result {
         },
         .edited => |new_text| {
             try backupAndWrite(io, arena, dir_path, config_file_name, now, config_text, new_text);
-            lines[n] = try std.fmt.allocPrint(arena, "backed up {s}.bak.{d}", .{ config_path, now });
+            lines[n] = try std.fmt.allocPrint(
+                arena,
+                "backed up {s}.bak.{d}",
+                .{ config_path, now },
+            );
             n += 1;
             lines[n] = "added the custom/gauge module to config.jsonc";
             n += 1;
@@ -287,7 +405,11 @@ pub fn run(io: Io, arena: Allocator, dir_path: []const u8, now: i64) !Result {
         .edited => |new_text| {
             if (style_text) |original| {
                 try backupAndWrite(io, arena, dir_path, style_file_name, now, original, new_text);
-                lines[n] = try std.fmt.allocPrint(arena, "backed up {s}.bak.{d}", .{ style_path, now });
+                lines[n] = try std.fmt.allocPrint(
+                    arena,
+                    "backed up {s}.bak.{d}",
+                    .{ style_path, now },
+                );
                 n += 1;
                 lines[n] = "appended the gauge styles to style.css";
                 n += 1;
@@ -299,7 +421,8 @@ pub fn run(io: Io, arena: Allocator, dir_path: []const u8, now: i64) !Result {
         },
     }
 
-    lines[n] = "reload waybar to pick this up: pkill waybar; waybar &, or your compositor's restart mechanism";
+    lines[n] = "reload waybar to pick this up: pkill waybar; waybar &, or your " ++
+        "compositor's restart mechanism";
     n += 1;
 
     std.debug.assert(n <= lines.len);
@@ -338,7 +461,9 @@ test "editConfig inserts module first in a multi-line modules-right with other c
 
     // The array's first entry is now custom/gauge, formatting around it
     // otherwise untouched (inserted right after "[", the brief's contract).
-    try testing.expect(std.mem.indexOf(u8, edited, "[\"custom/gauge\", \n    \"custom/updates\"") != null);
+    try testing.expect(
+        std.mem.indexOf(u8, edited, "[\"custom/gauge\", \n    \"custom/updates\"") != null,
+    );
     // Exactly one module object was inserted.
     var count: usize = 0;
     var pos: usize = 0;
@@ -358,7 +483,9 @@ test "editConfig handles a minimal single-line modules-right" {
         .edited => |t| t,
         .already_done => return error.TestUnexpectedResult,
     };
-    try testing.expect(std.mem.indexOf(u8, edited, "\"modules-right\": [\"custom/gauge\", \"clock\"]") != null);
+    try testing.expect(
+        std.mem.indexOf(u8, edited, "\"modules-right\": [\"custom/gauge\", \"clock\"]") != null,
+    );
     try testing.expect(std.mem.indexOf(u8, edited, "\"custom/gauge\": {") != null);
 }
 
@@ -370,7 +497,9 @@ test "editConfig handles an empty modules-right array" {
         .edited => |t| t,
         .already_done => return error.TestUnexpectedResult,
     };
-    try testing.expect(std.mem.indexOf(u8, edited, "\"modules-right\": [\"custom/gauge\"]") != null);
+    try testing.expect(
+        std.mem.indexOf(u8, edited, "\"modules-right\": [\"custom/gauge\"]") != null,
+    );
 }
 
 test "editConfig reports already done and leaves text untouched" {
@@ -399,6 +528,65 @@ test "editConfig refuses on a nested bracket before the array closes" {
     );
 }
 
+test "editConfig refuses rather than rewrite around a comment before the comma" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const fixture =
+        \\{
+        \\  "modules-right": ["clock"] /* comment */,
+        \\  "clock": {}
+        \\}
+    ;
+    try testing.expectError(
+        error.CommentAdjacentComma,
+        editConfig(arena_state.allocator(), fixture),
+    );
+}
+
+test "editConfig locates the real modules-right past an earlier comment mentioning it" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const fixture =
+        \\{
+        \\  // tweak "modules-right" later
+        \\  "modules-left": ["hyprland/workspaces"],
+        \\  "modules-right": ["clock"]
+        \\}
+    ;
+    const outcome = try editConfig(arena_state.allocator(), fixture);
+    const edited = switch (outcome) {
+        .edited => |t| t,
+        .already_done => return error.TestUnexpectedResult,
+    };
+
+    // The comment's own array-free "modules-right" mention did not hijack
+    // the insertion point: modules-left is untouched, and gauge landed
+    // first in the real modules-right.
+    try testing.expect(
+        std.mem.indexOf(u8, edited, "\"modules-left\": [\"hyprland/workspaces\"]") != null,
+    );
+    try testing.expect(
+        std.mem.indexOf(u8, edited, "\"modules-right\": [\"custom/gauge\", \"clock\"]") != null,
+    );
+}
+
+test "editConfig does not treat a comment mentioning custom/gauge as already done" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const fixture =
+        \\{
+        \\  // wire up "custom/gauge" later
+        \\  "modules-right": ["clock"]
+        \\}
+    ;
+    const outcome = try editConfig(arena_state.allocator(), fixture);
+    const edited = switch (outcome) {
+        .edited => |t| t,
+        .already_done => return error.TestUnexpectedResult,
+    };
+    try testing.expect(std.mem.indexOf(u8, edited, "\"custom/gauge\": {") != null);
+}
+
 test "editCss appends the block to empty text with no leading blank line" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -418,7 +606,9 @@ test "editCss appends the block to existing text preceded by a blank line" {
         .edited => |t| t,
         .already_done => return error.TestUnexpectedResult,
     };
-    try testing.expect(std.mem.indexOf(u8, edited, "#workspaces { margin: 0; }\n\n#custom-gauge") != null);
+    try testing.expect(
+        std.mem.indexOf(u8, edited, "#workspaces { margin: 0; }\n\n#custom-gauge") != null,
+    );
 }
 
 test "editCss reports already done and leaves text untouched" {
@@ -484,6 +674,101 @@ test "run refuses when config.jsonc is missing, writes nothing" {
     try testing.expect((try iterated.next(testing.io)) == null);
 }
 
+test "run refuses on a config.jsonc read error that is not FileNotFound, writes nothing" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    // A config.jsonc past `read_limit` deterministically triggers
+    // `error.StreamTooLong` rather than `error.FileNotFound`, exercising the
+    // "real file exists but could not be read" path without needing
+    // permission bits, which are not reliably testable in-process.
+    const oversized = try arena.alloc(u8, 1024 * 1024 + 16);
+    @memset(oversized, 'x');
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = config_file_name, .data = oversized });
+
+    var path_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &path_buf);
+    const dir_path = path_buf[0..dir_len];
+
+    const result = try run(testing.io, arena, dir_path, 1_700_000_000);
+    const refused = switch (result) {
+        .refused => |m| m,
+        .ok => return error.TestUnexpectedResult,
+    };
+    // The message must name the real failure, not claim the file is
+    // missing: it exists and gauge refused to read it.
+    try testing.expect(std.mem.indexOf(u8, refused, "no config.jsonc found") == null);
+    try testing.expect(std.mem.indexOf(u8, refused, "could not read") != null);
+    try testing.expect(std.mem.indexOf(u8, refused, "StreamTooLong") != null);
+
+    const big_limit: Io.Limit = .limited(2 * 1024 * 1024);
+    const config_after = try tmp.dir.readFileAlloc(testing.io, config_file_name, arena, big_limit);
+    try testing.expectEqualStrings(oversized, config_after);
+
+    // Nothing but the oversized config.jsonc itself exists: no backup, no
+    // style.css, nothing else was written.
+    var found_extra = false;
+    var iterated = tmp.dir.iterate();
+    while (try iterated.next(testing.io)) |entry| {
+        if (!std.mem.eql(u8, entry.name, config_file_name)) found_extra = true;
+    }
+    try testing.expect(!found_extra);
+}
+
+test "run refuses on a style.css read error that is not FileNotFound, writes nothing" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const config_data = "{\"modules-right\": [\"clock\"]}";
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = config_file_name, .data = config_data });
+    // See the config.jsonc test above: an oversized file deterministically
+    // triggers `error.StreamTooLong`, standing in for any non-FileNotFound
+    // read error (permission denied, a dangling symlink) that the old
+    // `catch null` treated as "missing" and silently overwrote.
+    const oversized = try arena.alloc(u8, 1024 * 1024 + 16);
+    @memset(oversized, 'y');
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = style_file_name, .data = oversized });
+
+    var path_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &path_buf);
+    const dir_path = path_buf[0..dir_len];
+
+    const result = try run(testing.io, arena, dir_path, 1_700_000_000);
+    const refused = switch (result) {
+        .refused => |m| m,
+        .ok => return error.TestUnexpectedResult,
+    };
+    try testing.expect(std.mem.indexOf(u8, refused, "could not read") != null);
+    try testing.expect(std.mem.indexOf(u8, refused, style_file_name) != null);
+    try testing.expect(std.mem.indexOf(u8, refused, "StreamTooLong") != null);
+
+    // Neither file was touched: config.jsonc was never written past its
+    // read (no backup, no edit), and style.css was never overwritten with a
+    // fresh stylesheet.
+    const config_after = try tmp.dir.readFileAlloc(testing.io, config_file_name, arena, read_limit);
+    try testing.expectEqualStrings(config_data, config_after);
+    const big_limit: Io.Limit = .limited(2 * 1024 * 1024);
+    const style_after = try tmp.dir.readFileAlloc(testing.io, style_file_name, arena, big_limit);
+    try testing.expectEqualStrings(oversized, style_after);
+
+    var found_extra = false;
+    var iterated = tmp.dir.iterate();
+    while (try iterated.next(testing.io)) |entry| {
+        const is_config = std.mem.eql(u8, entry.name, config_file_name);
+        const is_style = std.mem.eql(u8, entry.name, style_file_name);
+        if (!is_config and !is_style) {
+            found_extra = true;
+        }
+    }
+    try testing.expect(!found_extra);
+}
+
 test "run refuses on a malformed config and writes nothing, not even to style.css" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -491,7 +776,10 @@ test "run refuses on a malformed config and writes nothing, not even to style.cs
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = config_file_name, .data = "{\"modules-left\": [\"clock\"]}" });
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = config_file_name,
+        .data = "{\"modules-left\": [\"clock\"]}",
+    });
     try tmp.dir.writeFile(testing.io, .{ .sub_path = style_file_name, .data = "" });
 
     var path_buf: [Io.Dir.max_path_bytes]u8 = undefined;
@@ -503,7 +791,9 @@ test "run refuses on a malformed config and writes nothing, not even to style.cs
         .refused => |m| m,
         .ok => return error.TestUnexpectedResult,
     };
-    try testing.expect(std.mem.indexOf(u8, refused, "does not look like a stock waybar config") != null);
+    try testing.expect(
+        std.mem.indexOf(u8, refused, "does not look like a stock waybar config") != null,
+    );
 
     const style_after = try tmp.dir.readFileAlloc(testing.io, style_file_name, arena, read_limit);
     try testing.expectEqualStrings("", style_after);
@@ -552,8 +842,12 @@ test "run inserts the module and backs up both files, second run is a no-op" {
         .ok => |m| m,
         .refused => return error.TestUnexpectedResult,
     };
-    try testing.expect(std.mem.indexOf(u8, second_ok, "already has the custom/gauge module") != null);
-    try testing.expect(std.mem.indexOf(u8, second_ok, "already has the custom/gauge styles") != null);
+    try testing.expect(
+        std.mem.indexOf(u8, second_ok, "already has the custom/gauge module") != null,
+    );
+    try testing.expect(
+        std.mem.indexOf(u8, second_ok, "already has the custom/gauge styles") != null,
+    );
 
     // No new backup was written on the idempotent second run.
     var found_second_backup = false;
