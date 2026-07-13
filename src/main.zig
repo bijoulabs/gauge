@@ -8,6 +8,7 @@ comptime {
     _ = @import("state.zig");
     _ = @import("creds.zig");
     _ = @import("api.zig");
+    _ = @import("render.zig");
 }
 
 // NOTE: The brief's `main() !void` and `File.stdout().writer(&buf)` do not match this
