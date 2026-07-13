@@ -82,6 +82,8 @@ Environment variables:
 
 ## Waybar setup
 
+![gauge in waybar](waybar/screenshot.png)
+
 Two files under `waybar/` in this repo are meant to be copied or referenced
 from your own waybar config:
 
