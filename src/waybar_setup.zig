@@ -44,12 +44,16 @@ pub const ConfigError = error{
 
 /// The module definition inserted right after the `modules-right` array,
 /// verbatim per the brief's contract, matching the README's manual snippet.
+/// `format` prefixes the rendered text with U+2731 HEAVY ASTERISK, a
+/// Claude-evoking spark, ahead of waybar's own `{}` substitution; it styles
+/// how the module renders, not the JSON `gauge waybar` emits on stdout.
 const module_block =
     "  \"custom/gauge\": {\n" ++
     "    \"exec\": \"gauge waybar\",\n" ++
     "    \"return-type\": \"json\",\n" ++
     "    \"interval\": 30,\n" ++
-    "    \"tooltip\": true\n" ++
+    "    \"tooltip\": true,\n" ++
+    "    \"format\": \"\u{2731} {}\"\n" ++
     "  },";
 
 /// Pure text transform: wires `"custom/gauge"` into `text`'s `modules-right`
@@ -249,7 +253,8 @@ const manual_instructions =
     \\    "exec": "gauge waybar",
     \\    "return-type": "json",
     \\    "interval": 30,
-    \\    "tooltip": true
+    \\    "tooltip": true,
+    \\    "format": "✱ {}"
     \\  }
     \\
     \\Then add this block to style.css:
@@ -473,6 +478,9 @@ test "editConfig inserts module first in a multi-line modules-right with other c
     }
     try testing.expectEqual(@as(usize, 1), count);
     try testing.expect(std.mem.indexOf(u8, edited, "\"exec\": \"gauge waybar\"") != null);
+    // The module renders with a Claude-evoking spark prefix ahead of
+    // waybar's own `{}` substitution.
+    try testing.expect(std.mem.indexOf(u8, edited, "\"format\": \"\u{2731} {}\"") != null);
 }
 
 test "editConfig handles a minimal single-line modules-right" {

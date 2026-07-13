@@ -129,7 +129,8 @@ list in your waybar config and merge in:
     "exec": "gauge waybar",
     "return-type": "json",
     "interval": 30,
-    "tooltip": true
+    "tooltip": true,
+    "format": "✱ {}"
 }
 ```
 
