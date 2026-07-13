@@ -1,6 +1,12 @@
 const std = @import("std");
 const Io = std.Io;
 
+// Test reachability: the root module must reference every module so `zig build test`
+// walks the whole suite, per the zig-style testing convention.
+comptime {
+    _ = @import("policy.zig");
+}
+
 // NOTE: The brief's `main() !void` and `File.stdout().writer(&buf)` do not match this
 // Zig version. 0.17.0-dev.704+b8cb78023 threads an `Io` instance through `std.process.Init`
 // rather than a bare no-argument `main`, and `File.writer` now takes that `Io` explicitly.
