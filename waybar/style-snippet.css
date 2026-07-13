@@ -1,0 +1,4 @@
+#custom-gauge { padding: 0 8px; }
+#custom-gauge.warn { color: #e5c07b; }
+#custom-gauge.critical { color: #e06c75; }
+#custom-gauge.stale { opacity: 0.6; }

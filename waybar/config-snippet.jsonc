@@ -1,0 +1,9 @@
+// Add to your waybar config's modules list: "custom/gauge"
+{
+    "custom/gauge": {
+        "exec": "gauge waybar",
+        "return-type": "json",
+        "interval": 30,
+        "tooltip": true
+    }
+}
