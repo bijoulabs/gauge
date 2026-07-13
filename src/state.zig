@@ -82,12 +82,21 @@ pub fn save(io: std.Io, arena: std.mem.Allocator, dir_path: []const u8, state: S
 /// Resolves the directory the state file lives in: `GAUGE_STATE_DIR` if set,
 /// else `$XDG_STATE_HOME/gauge`, else `$HOME/.local/state/gauge`. Does not
 /// create the directory; `save` does that.
+///
+/// An empty value for any of the three variables is treated as unset rather
+/// than as an explicit empty path: an empty env var is operational input
+/// (e.g. `GAUGE_STATE_DIR=` in a launched shell), not a programmer error, so
+/// it falls through to the next source instead of producing a zero-length
+/// `dir_path` that would later trip the assert in `load`/`save`.
 pub fn stateDirPath(arena: std.mem.Allocator) ![]u8 {
-    if (try envVarOwned(arena, "GAUGE_STATE_DIR")) |explicit| return explicit;
+    if (try envVarOwned(arena, "GAUGE_STATE_DIR")) |explicit| {
+        if (explicit.len > 0) return explicit;
+    }
     if (try envVarOwned(arena, "XDG_STATE_HOME")) |xdg| {
-        return std.fs.path.join(arena, &.{ xdg, "gauge" });
+        if (xdg.len > 0) return std.fs.path.join(arena, &.{ xdg, "gauge" });
     }
     const home = try envVarOwned(arena, "HOME") orelse return error.HomeNotSet;
+    if (home.len == 0) return error.HomeNotSet;
     return std.fs.path.join(arena, &.{ home, ".local", "state", "gauge" });
 }
 
@@ -162,6 +171,26 @@ test "stateDirPath honors GAUGE_STATE_DIR when set" {
     defer arena_state.deinit();
     const path = try stateDirPath(arena_state.allocator());
     try testing.expectEqualStrings("/tmp/gauge-test-state-dir", path);
+}
+
+// NOTE: an empty-but-set `GAUGE_STATE_DIR=` is operational input (e.g. a
+// launched shell with the variable exported empty), not a programmer error,
+// so it must fall through to the next source rather than flow into `load`/
+// `save`'s `dir_path.len > 0` assert as an empty path.
+test "stateDirPath treats empty GAUGE_STATE_DIR as unset" {
+    const c = struct {
+        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+    };
+    std.debug.assert(c.setenv("GAUGE_STATE_DIR", "", 1) == 0);
+    defer std.debug.assert(c.unsetenv("GAUGE_STATE_DIR") == 0);
+    std.debug.assert(c.setenv("XDG_STATE_HOME", "/tmp/gauge-test-xdg-state-home", 1) == 0);
+    defer std.debug.assert(c.unsetenv("XDG_STATE_HOME") == 0);
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const path = try stateDirPath(arena_state.allocator());
+    try testing.expectEqualStrings("/tmp/gauge-test-xdg-state-home/gauge", path);
 }
 
 test "save then load round trips through disk" {
