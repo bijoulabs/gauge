@@ -166,10 +166,24 @@ fn markFailure(next: *state.State, status: policy.Status, now: i64) state.State 
 /// `backoff_until` far in the future, and a later backwards step would freeze
 /// refreshes for as long as that stale deadline says, well past anything the
 /// ladder itself would ever schedule.
+///
+/// Both windows' `utilization` are clamped to `[0.0, 10.0]` (ratio space, the
+/// same 1000-percent ceiling `api.readUtilization` enforces on freshly parsed
+/// values) for the same reason: this function is the load boundary, and a
+/// state file need not have come through that parser to reach it. State
+/// files written by a pre-fix `gauge` build, hand-edited for testing, or
+/// produced by some other writer entirely can carry an out-of-range value
+/// (negative, or a huge percent-as-ratio typo) that `readUtilization` would
+/// have rejected. Left unclamped, a negative value trips `render.pct`'s
+/// `utilization >= 0.0` assert and an oversized one overflows `pct`'s
+/// `@intFromFloat`, either way panicking the `ReleaseSafe` binary on every
+/// run until the file is manually fixed.
 fn sanitizeState(s: state.State, now: i64) state.State {
     var sanitized = s;
     sanitized.fetched_at = @min(sanitized.fetched_at, now);
     sanitized.backoff_until = @min(sanitized.backoff_until, now + 30 * std.time.s_per_min);
+    sanitized.five_hour.utilization = std.math.clamp(sanitized.five_hour.utilization, 0.0, 10.0);
+    sanitized.seven_day.utilization = std.math.clamp(sanitized.seven_day.utilization, 0.0, 10.0);
     return sanitized;
 }
 
@@ -372,4 +386,14 @@ test "sanitizeState leaves in-range fields untouched" {
     const sanitized = sanitizeState(s, 1000);
     try testing.expectEqual(@as(i64, 900), sanitized.fetched_at);
     try testing.expectEqual(@as(i64, 950), sanitized.backoff_until);
+}
+
+test "sanitizeState clamps out-of-range utilization into [0.0, 10.0]" {
+    const s = state.State{
+        .five_hour = .{ .utilization = -0.5 },
+        .seven_day = .{ .utilization = 5000 },
+    };
+    const sanitized = sanitizeState(s, 1000);
+    try testing.expectEqual(@as(f64, 0.0), sanitized.five_hour.utilization);
+    try testing.expectEqual(@as(f64, 10.0), sanitized.seven_day.utilization);
 }
