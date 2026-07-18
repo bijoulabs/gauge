@@ -31,7 +31,7 @@ const CredsFile = struct {
 /// `claudeAiOauth`, lacks `accessToken`, or carries an empty token collapses
 /// to `error.MalformedCredentials`: callers only need one signal for "this
 /// file is not a usable credentials file," not a menu of JSON error variants.
-pub fn extractAccessToken(arena: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+fn extractAccessToken(arena: std.mem.Allocator, bytes: []const u8) ![]const u8 {
     const parsed = std.json.parseFromSliceLeaky(CredsFile, arena, bytes, .{
         .ignore_unknown_fields = true,
     }) catch return error.MalformedCredentials;
@@ -87,12 +87,14 @@ test "missing claudeAiOauth is MalformedCredentials" {
 // NOTE: mirrors the `setenv`/`unsetenv` reconciliation from `state.zig`'s
 // `stateDirPath` tests: `std.c` does not wrap these, so they are declared
 // locally, and doing so is safe because the libc `environ` global they mutate
-// is exactly what `envVarOwned` (reused from `state.zig`) reads.
+// is exactly what `envVarOwned` (reused from `state.zig`) reads. Shared by
+// the three `credentialsPath` env tests below.
+const c = struct {
+    extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+    extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+};
+
 test "credentialsPath honors GAUGE_CREDENTIALS when set" {
-    const c = struct {
-        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
-    };
     std.debug.assert(c.setenv("GAUGE_CREDENTIALS", "/tmp/gauge-test-creds.json", 1) == 0);
     defer std.debug.assert(c.unsetenv("GAUGE_CREDENTIALS") == 0);
 
@@ -106,10 +108,6 @@ test "credentialsPath honors GAUGE_CREDENTIALS when set" {
 // programmer error, so it must fall through to the `HOME`-derived default
 // rather than flow into `readAccessToken` as a zero-length path.
 test "credentialsPath treats empty GAUGE_CREDENTIALS as unset" {
-    const c = struct {
-        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
-    };
     std.debug.assert(c.setenv("GAUGE_CREDENTIALS", "", 1) == 0);
     defer std.debug.assert(c.unsetenv("GAUGE_CREDENTIALS") == 0);
     std.debug.assert(c.setenv("HOME", "/tmp/gauge-test-home", 1) == 0);
@@ -122,10 +120,6 @@ test "credentialsPath treats empty GAUGE_CREDENTIALS as unset" {
 }
 
 test "credentialsPath errors when neither GAUGE_CREDENTIALS nor HOME is set" {
-    const c = struct {
-        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
-    };
     std.debug.assert(c.unsetenv("GAUGE_CREDENTIALS") == 0);
     std.debug.assert(c.setenv("HOME", "", 1) == 0);
     defer std.debug.assert(c.unsetenv("HOME") == 0);

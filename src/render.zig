@@ -14,7 +14,7 @@ const testing = std.testing;
 /// minutes under a day (`1h 08m`), and days with hours beyond that (`2d
 /// 3h`). Shared by `human` and `waybar` for both time-until-reset and
 /// time-since-fetch.
-pub fn relative(arena: std.mem.Allocator, delta_seconds: i64) ![]u8 {
+fn relative(arena: std.mem.Allocator, delta_seconds: i64) ![]u8 {
     if (delta_seconds <= 0) return arena.dupe(u8, "now");
     const minutes_total = @divTrunc(delta_seconds, 60);
     const days = @divTrunc(minutes_total, 60 * 24);

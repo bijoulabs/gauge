@@ -35,7 +35,7 @@ const state_read_limit: std.Io.Limit = .limited(64 * 1024);
 /// one, but rejects malformed JSON outright: `error.SyntaxError` and friends
 /// propagate rather than silently producing a zeroed `State`. `load` is the
 /// layer that turns "corrupt" into "absent."
-pub fn parse(arena: std.mem.Allocator, bytes: []const u8) !State {
+fn parse(arena: std.mem.Allocator, bytes: []const u8) !State {
     return std.json.parseFromSliceLeaky(State, arena, bytes, .{
         .ignore_unknown_fields = true,
     });
