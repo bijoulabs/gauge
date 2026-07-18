@@ -43,6 +43,10 @@ and a backoff ladder (5 → 10 → 20 → 30 min on repeated failure). A waybar
 refreshing every 30s does **not** mean a request every 30s. Please don't build
 anything that bypasses the cache and hammers it.
 
+One more thing to know: by default gauge introduces itself with the same
+`User-Agent` string as the Claude Code CLI, since that's the only client the
+endpoint knows. Set `GAUGE_USER_AGENT` if you'd rather it fly its own flag.
+
 When a fetch fails, gauge keeps showing the last good number — marked stale —
 instead of breaking. It reads your OAuth token read-only and never refreshes
 it; if it's expired, run `claude` and gauge catches up on its own.
