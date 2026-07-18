@@ -51,11 +51,10 @@ fn pct(utilization: f64) i64 {
 pub fn waybar(arena: std.mem.Allocator, s: state.State, now: i64, ttl: i64) ![]u8 {
     const worst = @max(s.five_hour.utilization, s.seven_day.utilization);
     const stale = policy.isStale(now, s.fetched_at, ttl, s.last_status);
-    const class = if (stale) "stale" else switch (policy.classify(worst)) {
-        .ok => "ok",
-        .warn => "warn",
-        .critical => "critical",
-    };
+    // NOTE: the CSS classes waybar styles against are `policy.Class`'s tag
+    // names verbatim, so renaming a tag is a user-visible contract change;
+    // the class-band test below pins all three spellings.
+    const class = if (stale) "stale" else @tagName(policy.classify(worst));
     const text = try std.fmt.allocPrint(arena, "5h {d}% \u{b7} wk {d}%", .{
         pct(s.five_hour.utilization), pct(s.seven_day.utilization),
     });
@@ -147,6 +146,24 @@ test "waybar json has text class percentage tooltip" {
     try testing.expectEqualStrings("ok", parsed.object.get("class").?.string);
     try testing.expectEqual(@as(i64, 62), parsed.object.get("percentage").?.integer);
     try testing.expect(parsed.object.get("tooltip").?.string.len > 0);
+}
+
+test "waybar class tracks the classification band" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const bands = [_]struct { utilization: f64, class: []const u8 }{
+        .{ .utilization = 0.45, .class = "ok" },
+        .{ .utilization = 0.72, .class = "warn" },
+        .{ .utilization = 0.94, .class = "critical" },
+    };
+    for (bands) |band| {
+        var s = testState();
+        s.five_hour.utilization = band.utilization;
+        const line = try waybar(arena, s, 1060, 180);
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{});
+        try testing.expectEqualStrings(band.class, parsed.object.get("class").?.string);
+    }
 }
 
 test "waybar marks stale with suffix class" {

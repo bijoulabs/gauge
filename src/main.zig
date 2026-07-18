@@ -118,7 +118,8 @@ fn refresh(io: Io, arena: std.mem.Allocator, previous: state.State, now: i64) st
     const token = creds.readAccessToken(io, arena, creds_path) catch
         return markFailure(&next, .auth_error, now);
     const user_agent = userAgent(arena) catch api.default_user_agent;
-    switch (api.fetchUsage(io, arena, token, user_agent)) {
+    const outcome = api.fetchUsage(io, arena, token, user_agent);
+    switch (outcome) {
         .ok => |snapshot| {
             next.fetched_at = now;
             next.five_hour = .{
@@ -133,10 +134,11 @@ fn refresh(io: Io, arena: std.mem.Allocator, previous: state.State, now: i64) st
             next.backoff_until = 0;
             next.backoff_level = 0;
         },
-        .rate_limited => _ = markFailure(&next, .rate_limited, now),
-        .auth_error => _ = markFailure(&next, .auth_error, now),
-        .network_error => _ = markFailure(&next, .network_error, now),
-        .parse_error => _ = markFailure(&next, .parse_error, now),
+        // All four failure payloads are void and `FetchOutcome` is tagged by
+        // `policy.Status` itself, so the active tag is the status to record.
+        .rate_limited, .auth_error, .network_error, .parse_error => {
+            _ = markFailure(&next, @as(policy.Status, outcome), now);
+        },
     }
     return next;
 }
@@ -387,8 +389,7 @@ fn run(init: std.process.Init) u8 {
 // `Init` rather than exposing a bare no-argument `main`. Reconciled by keeping the
 // brief's `u8`-returning logic verbatim in `run` above and using this thin wrapper
 // to translate a nonzero code into the real exit code via `std.process.exit`, which
-// is `noreturn`, so `main` never needs to produce a `u8` itself. A zero code needs
-// no translation: falling off the end of `!void` already exits 0.
+// is `noreturn`, so `main` never needs to produce a `u8` itself.
 //
 // `init.io` is used directly instead of constructing a `std.Io.Threaded` as the
 // brief sketches: `Init` already carries an appropriate `Io` for the target
