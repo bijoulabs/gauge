@@ -6,6 +6,7 @@
 //! breaks), 2 for usage errors, offline-with-no-data, or a render failure.
 
 const std = @import("std");
+const build_options = @import("build_options");
 const Io = std.Io;
 const policy = @import("policy.zig");
 const state = @import("state.zig");
@@ -317,7 +318,7 @@ fn run(init: std.process.Init) u8 {
         return 0;
     }
     if (args.version) {
-        printOut(io, "gauge 0.1.0\n");
+        printOut(io, "gauge " ++ build_options.version ++ "\n");
         return 0;
     }
 

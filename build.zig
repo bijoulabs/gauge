@@ -1,5 +1,16 @@
 const std = @import("std");
 
+/// Mirrors build.zig.zon so the manifest can be imported as ZON: the version
+/// lives in exactly one place and `--version` can never drift from it.
+const Manifest = struct {
+    name: enum { gauge },
+    version: []const u8,
+    minimum_zig_version: []const u8,
+    fingerprint: u64,
+    paths: []const []const u8,
+};
+const manifest: Manifest = @import("build.zig.zon");
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -18,6 +29,11 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    // Feeds the manifest version into src/main.zig's `--version` output; the
+    // tests reuse exe.root_module, so the option reaches them for free.
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", manifest.version);
+    exe.root_module.addOptions("build_options", options);
     b.installArtifact(exe);
 
     const tests = b.addTest(.{
