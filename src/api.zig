@@ -97,10 +97,8 @@ fn readUtilization(window: std.json.Value) ?f64 {
 
 /// Reads a reset time from `window` as Unix epoch seconds. The value may
 /// arrive as a bare epoch integer or as an ISO 8601 string (the fixture uses
-/// the latter). `now` is accepted for interface symmetry with the rest of
-/// `parseResponse` but is not otherwise consulted here.
-fn readResetEpoch(window: std.json.Value, now: i64) ?i64 {
-    _ = now;
+/// the latter).
+fn readResetEpoch(window: std.json.Value) ?i64 {
     const value = firstField(window, &reset_keys) orelse return null;
     return switch (value) {
         .integer => |i| i,
@@ -115,16 +113,16 @@ fn readResetEpoch(window: std.json.Value, now: i64) ?i64 {
 /// rename degrades to `error.UnrecognizedShape` instead of a crash:
 /// `fetchUsage` turns that into `.parse_error` and keeps serving whatever
 /// stale cached snapshot it already has.
-pub fn parseResponse(arena: std.mem.Allocator, bytes: []const u8, now: i64) !Snapshot {
+fn parseResponse(arena: std.mem.Allocator, bytes: []const u8) !Snapshot {
     const root = std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{}) catch
         return error.UnrecognizedShape;
     const five = firstField(root, &five_hour_keys) orelse return error.UnrecognizedShape;
     const seven = firstField(root, &seven_day_keys) orelse return error.UnrecognizedShape;
     return .{
         .five_hour_utilization = readUtilization(five) orelse return error.UnrecognizedShape,
-        .five_hour_resets_at = readResetEpoch(five, now) orelse return error.UnrecognizedShape,
+        .five_hour_resets_at = readResetEpoch(five) orelse return error.UnrecognizedShape,
         .seven_day_utilization = readUtilization(seven) orelse return error.UnrecognizedShape,
-        .seven_day_resets_at = readResetEpoch(seven, now) orelse return error.UnrecognizedShape,
+        .seven_day_resets_at = readResetEpoch(seven) orelse return error.UnrecognizedShape,
     };
 }
 
@@ -246,7 +244,6 @@ pub fn fetchUsage(
     arena: std.mem.Allocator,
     token: []const u8,
     user_agent: []const u8,
-    now: i64,
 ) FetchOutcome {
     var client: std.http.Client = .{ .allocator = arena, .io = io };
     defer client.deinit();
@@ -281,7 +278,7 @@ pub fn fetchUsage(
         .too_many_requests => return .rate_limited,
         else => return .network_error,
     }
-    const snapshot = parseResponse(arena, writer.buffered(), now) catch return .parse_error;
+    const snapshot = parseResponse(arena, writer.buffered()) catch return .parse_error;
     return .{ .ok = snapshot };
 }
 
@@ -291,7 +288,7 @@ test "parses the live-shaped fixture response" {
     const arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     var arena_holder = arena_state;
     defer arena_holder.deinit();
-    const snap = try parseResponse(arena_holder.allocator(), fixture, 1783275851);
+    const snap = try parseResponse(arena_holder.allocator(), fixture);
     // Exact values from the fixture: five_hour.utilization = 3.0 (a 0-100
     // percentage) normalizes to 0.03, seven_day.utilization = 41.0 to 0.41.
     try testing.expectApproxEqAbs(@as(f64, 0.03), snap.five_hour_utilization, 1e-9);
@@ -306,7 +303,7 @@ test "empty object is parse error" {
     defer arena_holder.deinit();
     try testing.expectError(
         error.UnrecognizedShape,
-        parseResponse(arena_holder.allocator(), "{}", 0),
+        parseResponse(arena_holder.allocator(), "{}"),
     );
 }
 
@@ -320,7 +317,7 @@ test "parseResponse accepts community-alternate key names" {
     // heuristic.
     const body = "{\"session_usage_5h\":{\"used_pct\":50.0,\"reset_time\":1000}," ++
         "\"weekly_usage\":{\"used_pct\":25.0,\"reset_at\":2000}}";
-    const snap = try parseResponse(arena_holder.allocator(), body, 0);
+    const snap = try parseResponse(arena_holder.allocator(), body);
     try testing.expectEqual(@as(f64, 0.5), snap.five_hour_utilization);
     try testing.expectEqual(@as(i64, 1000), snap.five_hour_resets_at);
     try testing.expectEqual(@as(f64, 0.25), snap.seven_day_utilization);
@@ -335,7 +332,7 @@ test "parseResponse rejects a negative raw utilization" {
         "\"seven_day\":{\"utilization\":1,\"resets_at\":123}}";
     try testing.expectError(
         error.UnrecognizedShape,
-        parseResponse(arena_holder.allocator(), body, 0),
+        parseResponse(arena_holder.allocator(), body),
     );
 }
 
@@ -347,7 +344,7 @@ test "parseResponse rejects an implausibly large raw utilization" {
         "\"seven_day\":{\"utilization\":1,\"resets_at\":123}}";
     try testing.expectError(
         error.UnrecognizedShape,
-        parseResponse(arena_holder.allocator(), body, 0),
+        parseResponse(arena_holder.allocator(), body),
     );
 }
 
@@ -357,7 +354,7 @@ test "parseResponse boundary: raw 1.0 is 1 percent, not 100 percent" {
     defer arena_holder.deinit();
     const body = "{\"five_hour\":{\"utilization\":1.0,\"resets_at\":123}," ++
         "\"seven_day\":{\"utilization\":1.0,\"resets_at\":456}}";
-    const snap = try parseResponse(arena_holder.allocator(), body, 0);
+    const snap = try parseResponse(arena_holder.allocator(), body);
     try testing.expectApproxEqAbs(@as(f64, 0.01), snap.five_hour_utilization, 1e-9);
     try testing.expectApproxEqAbs(@as(f64, 0.01), snap.seven_day_utilization, 1e-9);
 }
@@ -368,7 +365,7 @@ test "parseResponse rejects malformed json" {
     defer arena_holder.deinit();
     try testing.expectError(
         error.UnrecognizedShape,
-        parseResponse(arena_holder.allocator(), "not json", 0),
+        parseResponse(arena_holder.allocator(), "not json"),
     );
 }
 
@@ -379,7 +376,7 @@ test "parseResponse rejects a missing window" {
     const body = "{\"five_hour\":{\"utilization\":1.0,\"resets_at\":1}}";
     try testing.expectError(
         error.UnrecognizedShape,
-        parseResponse(arena_holder.allocator(), body, 0),
+        parseResponse(arena_holder.allocator(), body),
     );
 }
 
@@ -394,7 +391,7 @@ test "parseResponse rejects wrong-typed fields" {
         "\"seven_day\":{\"utilization\":1,\"resets_at\":123}}";
     try testing.expectError(
         error.UnrecognizedShape,
-        parseResponse(arena_holder.allocator(), body, 0),
+        parseResponse(arena_holder.allocator(), body),
     );
 }
 

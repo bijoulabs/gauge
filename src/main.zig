@@ -122,7 +122,7 @@ fn refresh(io: Io, arena: std.mem.Allocator, previous: state.State, now: i64) st
     const token = creds.readAccessToken(io, arena, creds_path) catch
         return markFailure(&next, .auth_error, now);
     const user_agent = userAgent(arena) catch api.default_user_agent;
-    switch (api.fetchUsage(io, arena, token, user_agent, now)) {
+    switch (api.fetchUsage(io, arena, token, user_agent)) {
         .ok => |snapshot| {
             next.fetched_at = now;
             next.five_hour = .{
