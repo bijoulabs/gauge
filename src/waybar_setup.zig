@@ -18,11 +18,11 @@ const Io = std.Io;
 /// file `editConfig`/`editCss` should try to parse.
 const read_limit: Io.Limit = .limited(1024 * 1024);
 
-pub const config_file_name = "config.jsonc";
-pub const style_file_name = "style.css";
+const config_file_name = "config.jsonc";
+const style_file_name = "style.css";
 
 /// Outcome of editing config.jsonc's text.
-pub const ConfigOutcome = union(enum) {
+const ConfigOutcome = union(enum) {
     /// `"custom/gauge"` was already present; `text` was not touched.
     already_done,
     /// The module is wired in; carries the full new text.
@@ -32,7 +32,7 @@ pub const ConfigOutcome = union(enum) {
 /// Reasons `editConfig` refuses to touch a config: its `modules-right` array
 /// is missing or does not match the flat, single-level shape the insertion
 /// logic knows how to edit safely.
-pub const ConfigError = error{
+const ConfigError = error{
     NoModulesRight,
     NoCloseBracket,
     NestedBracket,
@@ -66,7 +66,7 @@ const module_block =
 /// what this function knows how to edit, and it refuses via `ConfigError`
 /// rather than guess. This is the safety boundary the brief calls out: `run`
 /// calls this once and never retries with a looser rule on refusal.
-pub fn editConfig(
+fn editConfig(
     arena: Allocator,
     text: []const u8,
 ) (ConfigError || Allocator.Error)!ConfigOutcome {
@@ -193,7 +193,7 @@ fn alreadyHasCustomGauge(text: []const u8) bool {
 }
 
 /// Outcome of editing style.css's text.
-pub const CssOutcome = union(enum) {
+const CssOutcome = union(enum) {
     /// `#custom-gauge` was already present; `text` was not touched.
     already_done,
     /// The CSS block is appended; carries the full new text.
@@ -213,7 +213,7 @@ const css_block =
 /// empty style.css, waybar tolerates either) gets just the block with no
 /// leading blank line. Never refuses: unlike `editConfig` there is no
 /// structure to misparse, an append is always safe.
-pub fn editCss(arena: Allocator, text: []const u8) Allocator.Error!CssOutcome {
+fn editCss(arena: Allocator, text: []const u8) Allocator.Error!CssOutcome {
     if (std.mem.indexOf(u8, text, "#custom-gauge") != null) return .already_done;
     if (text.len == 0) return .{ .edited = css_block };
     const sep = if (std.mem.endsWith(u8, text, "\n")) "\n" else "\n\n";
@@ -294,15 +294,13 @@ fn backupAndWrite(
     const backup_path = try std.fs.path.join(arena, &.{ dir_path, backup_name });
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = backup_path, .data = text });
 
-    const path = try std.fs.path.join(arena, &.{ dir_path, name });
-    const tmp_path = try std.fmt.allocPrint(arena, "{s}.tmp", .{path});
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp_path, .data = new_text });
-    try Io.Dir.cwd().rename(tmp_path, .cwd(), path, io);
+    try writeNew(io, arena, dir_path, name, new_text);
 }
 
-/// Writes `new_text` to `dir_path/name` atomically, with no preceding
-/// backup: used only when the file did not previously exist, so there is
-/// nothing to back up.
+/// Writes `new_text` to `dir_path/name` atomically, a temp file renamed
+/// into place: used directly when the file did not previously exist (so
+/// there is nothing to back up), and by `backupAndWrite` once its backup is
+/// written.
 ///
 /// LIMITATION: same symlink caveat as `backupAndWrite`, see its doc comment.
 fn writeNew(
@@ -316,6 +314,25 @@ fn writeNew(
     const tmp_path = try std.fmt.allocPrint(arena, "{s}.tmp", .{path});
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp_path, .data = new_text });
     try Io.Dir.cwd().rename(tmp_path, .cwd(), path, io);
+}
+
+/// Formats `run`'s refusal message for a file that exists but could not be
+/// read. Compute-only: `run` decides when refusing is the right call.
+fn unreadableRefusal(
+    arena: Allocator,
+    path: []const u8,
+    err: anyerror,
+) Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(
+        arena,
+        "gauge: could not read {s} ({s}), refusing to edit it\n\n{s}",
+        .{ path, @errorName(err), manual_instructions },
+    );
+}
+
+/// Formats the "backed up" line of `run`'s report for the file at `path`.
+fn backupNotice(arena: Allocator, path: []const u8, now: i64) Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(arena, "backed up {s}.bak.{d}", .{ path, now });
 }
 
 /// Reads `dir_path/config.jsonc` and `dir_path/style.css`, wires the gauge
@@ -349,11 +366,7 @@ pub fn run(io: Io, arena: Allocator, dir_path: []const u8, now: i64) !Result {
             "gauge: no config.jsonc found at {s}\n\n{s}",
             .{ config_path, manual_instructions },
         ) },
-        else => return .{ .refused = try std.fmt.allocPrint(
-            arena,
-            "gauge: could not read {s} ({s}), refusing to edit it\n\n{s}",
-            .{ config_path, @errorName(err), manual_instructions },
-        ) },
+        else => return .{ .refused = try unreadableRefusal(arena, config_path, err) },
     };
 
     const config_outcome = editConfig(arena, config_text) catch |err| {
@@ -368,11 +381,7 @@ pub fn run(io: Io, arena: Allocator, dir_path: []const u8, now: i64) !Result {
     const style_read = Io.Dir.cwd().readFileAlloc(io, style_path, arena, read_limit);
     const style_text: ?[]const u8 = style_read catch |err| switch (err) {
         error.FileNotFound => null,
-        else => return .{ .refused = try std.fmt.allocPrint(
-            arena,
-            "gauge: could not read {s} ({s}), refusing to edit it\n\n{s}",
-            .{ style_path, @errorName(err), manual_instructions },
-        ) },
+        else => return .{ .refused = try unreadableRefusal(arena, style_path, err) },
     };
     const css_outcome = try editCss(arena, style_text orelse "");
 
@@ -388,11 +397,7 @@ pub fn run(io: Io, arena: Allocator, dir_path: []const u8, now: i64) !Result {
         },
         .edited => |new_text| {
             try backupAndWrite(io, arena, dir_path, config_file_name, now, config_text, new_text);
-            lines[n] = try std.fmt.allocPrint(
-                arena,
-                "backed up {s}.bak.{d}",
-                .{ config_path, now },
-            );
+            lines[n] = try backupNotice(arena, config_path, now);
             n += 1;
             lines[n] = "added the custom/gauge module to config.jsonc";
             n += 1;
@@ -407,11 +412,7 @@ pub fn run(io: Io, arena: Allocator, dir_path: []const u8, now: i64) !Result {
         .edited => |new_text| {
             if (style_text) |original| {
                 try backupAndWrite(io, arena, dir_path, style_file_name, now, original, new_text);
-                lines[n] = try std.fmt.allocPrint(
-                    arena,
-                    "backed up {s}.bak.{d}",
-                    .{ style_path, now },
-                );
+                lines[n] = try backupNotice(arena, style_path, now);
                 n += 1;
                 lines[n] = "appended the gauge styles to style.css";
                 n += 1;
@@ -530,6 +531,15 @@ test "editConfig refuses on a nested bracket before the array closes" {
     try testing.expectError(
         error.NestedBracket,
         editConfig(arena_state.allocator(), "{\"modules-right\": [\"a\", [\"b\"]]}"),
+    );
+}
+
+test "editConfig refuses a modules-right array with no closing bracket" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    try testing.expectError(
+        error.NoCloseBracket,
+        editConfig(arena_state.allocator(), "{\"modules-right\": [\"clock\""),
     );
 }
 
