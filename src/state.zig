@@ -83,24 +83,35 @@ pub fn save(io: std.Io, arena: std.mem.Allocator, dir_path: []const u8, state: S
     try std.Io.Dir.cwd().rename(tmp_path, .cwd(), final_path, io);
 }
 
+/// Reads `key` via `envVarOwned`, treating an explicitly empty value as
+/// unset. This is the canonical home of the "empty means unset" rule every
+/// gauge env var follows: an empty value is operational input (e.g.
+/// `GAUGE_STATE_DIR=` in a launched shell), not an explicit override, so it
+/// falls through to the caller's next source instead of producing a
+/// zero-length path that would later trip an assert.
+pub fn envVarNonEmpty(arena: std.mem.Allocator, key: []const u8) std.mem.Allocator.Error!?[]u8 {
+    const value = try envVarOwned(arena, key) orelse return null;
+    if (value.len == 0) return null;
+    return value;
+}
+
+/// Resolves `$HOME`, with unset and empty both collapsing to
+/// `error.HomeNotSet`: either way there is no usable home directory, and
+/// that is operational input, not programmer error.
+pub fn homePath(arena: std.mem.Allocator) ![]u8 {
+    return try envVarNonEmpty(arena, "HOME") orelse error.HomeNotSet;
+}
+
 /// Resolves the directory the state file lives in: `GAUGE_STATE_DIR` if set,
 /// else `$XDG_STATE_HOME/gauge`, else `$HOME/.local/state/gauge`. Does not
-/// create the directory; `save` does that.
-///
-/// An empty value for any of the three variables is treated as unset rather
-/// than as an explicit empty path: an empty env var is operational input
-/// (e.g. `GAUGE_STATE_DIR=` in a launched shell), not a programmer error, so
-/// it falls through to the next source instead of producing a zero-length
-/// `dir_path` that would later trip the assert in `load`/`save`.
+/// create the directory; `save` does that. Empty variables are unset, per
+/// `envVarNonEmpty`.
 pub fn stateDirPath(arena: std.mem.Allocator) ![]u8 {
-    if (try envVarOwned(arena, "GAUGE_STATE_DIR")) |explicit| {
-        if (explicit.len > 0) return explicit;
+    if (try envVarNonEmpty(arena, "GAUGE_STATE_DIR")) |explicit| return explicit;
+    if (try envVarNonEmpty(arena, "XDG_STATE_HOME")) |xdg| {
+        return std.fs.path.join(arena, &.{ xdg, "gauge" });
     }
-    if (try envVarOwned(arena, "XDG_STATE_HOME")) |xdg| {
-        if (xdg.len > 0) return std.fs.path.join(arena, &.{ xdg, "gauge" });
-    }
-    const home = try envVarOwned(arena, "HOME") orelse return error.HomeNotSet;
-    if (home.len == 0) return error.HomeNotSet;
+    const home = try homePath(arena);
     return std.fs.path.join(arena, &.{ home, ".local", "state", "gauge" });
 }
 

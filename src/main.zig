@@ -100,14 +100,10 @@ fn argvSlice(init: std.process.Init, arena: std.mem.Allocator) ![]const []const 
 }
 
 /// Resolves the `User-Agent` header for the upstream request: `GAUGE_USER_AGENT` if
-/// set to a non-empty value, else `api.default_user_agent`. Mirrors
-/// `state.stateDirPath`'s treatment of an empty-but-set variable as unset, since an
-/// empty env var is operational input, not an explicit override.
+/// set to a non-empty value, else `api.default_user_agent`. Empty variables are
+/// unset, per `state.envVarNonEmpty`.
 fn userAgent(arena: std.mem.Allocator) ![]const u8 {
-    if (try state.envVarOwned(arena, "GAUGE_USER_AGENT")) |explicit| {
-        if (explicit.len > 0) return explicit;
-    }
-    return api.default_user_agent;
+    return try state.envVarNonEmpty(arena, "GAUGE_USER_AGENT") orelse api.default_user_agent;
 }
 
 /// Attempts one refresh from upstream and returns the resulting state: `previous`

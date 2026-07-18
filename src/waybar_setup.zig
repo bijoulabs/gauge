@@ -222,15 +222,12 @@ pub fn editCss(arena: Allocator, text: []const u8) Allocator.Error!CssOutcome {
 }
 
 /// Resolves the waybar config directory: `GAUGE_WAYBAR_DIR` if set to a
-/// non-empty value, else `$HOME/.config/waybar`. Mirrors
-/// `state.stateDirPath`'s treatment of an empty-but-set variable as unset
-/// rather than an explicit empty path.
+/// non-empty value, else `$HOME/.config/waybar`. Empty variables are unset
+/// and a missing `HOME` is `error.HomeNotSet`, per `state.envVarNonEmpty`
+/// and `state.homePath`.
 pub fn waybarDirPath(arena: Allocator) ![]u8 {
-    if (try state.envVarOwned(arena, "GAUGE_WAYBAR_DIR")) |explicit| {
-        if (explicit.len > 0) return explicit;
-    }
-    const home = try state.envVarOwned(arena, "HOME") orelse return error.HomeNotSet;
-    if (home.len == 0) return error.HomeNotSet;
+    if (try state.envVarNonEmpty(arena, "GAUGE_WAYBAR_DIR")) |explicit| return explicit;
+    const home = try state.homePath(arena);
     return std.fs.path.join(arena, &.{ home, ".config", "waybar" });
 }
 

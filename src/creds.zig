@@ -42,16 +42,12 @@ pub fn extractAccessToken(arena: std.mem.Allocator, bytes: []const u8) ![]const 
 }
 
 /// Resolves the path to the credentials file: `GAUGE_CREDENTIALS` if set to a
-/// non-empty value, else `$HOME/.claude/.credentials.json`. Mirrors
-/// `state.stateDirPath`'s treatment of an empty-but-set variable as unset
-/// rather than as an explicit empty path, and its `error.HomeNotSet` when even
-/// `HOME` is unusable: both are operational input, not programmer error.
+/// non-empty value, else `$HOME/.claude/.credentials.json`. Empty variables
+/// are unset and a missing `HOME` is `error.HomeNotSet`, per
+/// `state.envVarNonEmpty` and `state.homePath`.
 pub fn credentialsPath(arena: std.mem.Allocator) ![]u8 {
-    if (try state.envVarOwned(arena, "GAUGE_CREDENTIALS")) |explicit| {
-        if (explicit.len > 0) return explicit;
-    }
-    const home = try state.envVarOwned(arena, "HOME") orelse return error.HomeNotSet;
-    if (home.len == 0) return error.HomeNotSet;
+    if (try state.envVarNonEmpty(arena, "GAUGE_CREDENTIALS")) |explicit| return explicit;
+    const home = try state.homePath(arena);
     return std.fs.path.join(arena, &.{ home, ".claude", ".credentials.json" });
 }
 
