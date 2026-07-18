@@ -44,13 +44,16 @@ pub const FetchOutcome = union(policy.Status) {
     parse_error: void,
 };
 
-// NOTE: the fixture captured at src/fixtures/usage-response.json (2026-07-12)
-// uses "five_hour" and "seven_day" as the top-level window keys and
+// NOTE: the fixture at src/fixtures/usage-response.json is a sanitized
+// replica of a live response captured 2026-07-12: field names and shape are
+// verbatim, but account-specific values (billing state, scoped limits) and
+// fields for unreleased surfaces were removed before publishing. The live
+// response uses "five_hour" and "seven_day" as the top-level window keys and
 // "resets_at" for the reset field, not the "session_usage_5h",
-// "weekly_usage", and "reset_time" names community docs guessed. The
-// fixture's real names lead each candidate list below; the guessed names
-// stay as fallbacks in case a different account tier or a future server
-// change reshapes the response.
+// "weekly_usage", and "reset_time" names community docs guessed. The real
+// names lead each candidate list below; the guessed names stay as fallbacks
+// in case a different account tier or a future server change reshapes the
+// response.
 const five_hour_keys = [_][]const u8{ "five_hour", "session_usage_5h", "5h" };
 const seven_day_keys = [_][]const u8{ "seven_day", "weekly_usage", "7d" };
 const utilization_keys = [_][]const u8{ "utilization", "used_pct" };
@@ -284,7 +287,7 @@ pub fn fetchUsage(
 
 const fixture = @embedFile("fixtures/usage-response.json");
 
-test "parses the captured live response" {
+test "parses the live-shaped fixture response" {
     const arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     var arena_holder = arena_state;
     defer arena_holder.deinit();
