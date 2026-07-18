@@ -27,11 +27,12 @@ gauge
 gauge setup-waybar
 ```
 
-![gauge's waybar module reading: ✱ 5h 25% · wk 45%](docs/screenshot.png)
+![gauge's waybar module across states: healthy, amber past 70%, red past 90%, and dimmed when stale](docs/screenshot.png)
 
 One command. It backs up your config, refuses if it doesn't recognize the
-shape, and is safe to re-run. The module goes yellow at 70%, red at 90%, and
-dims when the data is stale. Reload waybar and you're done.
+shape, and is safe to re-run. As the screenshot shows, the module goes amber
+at 70%, red at 90%, and dims when the data is stale. Reload waybar and you're
+done.
 
 ## The fine print
 
