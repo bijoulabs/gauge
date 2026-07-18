@@ -1,13 +1,17 @@
 # gauge
 
-A small command line tool that shows how much of your Claude usage window
-you have used, for a terminal or for a waybar status bar. It reads the same
-underlying data as Claude Code's `/usage` command: the 5 hour and 7 day
-rate-limit windows tied to your account.
+*A little fuel gauge for your Claude usage — in your terminal, or in your waybar.*
 
-## Quick start
+It reads the same 5-hour and 7-day rate-limit windows as Claude Code's
+`/usage`, and prints them small enough to leave running somewhere:
 
-With [Zig](https://ziglang.org/download/) installed and Claude Code logged in:
+```
+5h 12% · wk 41%
+```
+
+## Get it
+
+Needs [Zig](https://ziglang.org/download/) and a logged-in Claude Code.
 
 ```bash
 git clone https://github.com/moesy/gauge
@@ -17,116 +21,61 @@ install -m755 zig-out/bin/gauge ~/.local/bin/
 gauge
 ```
 
-That builds the binary, installs it to `~/.local/bin`, and prints your
-current usage. `gauge setup-waybar` wires the waybar module.
-
-## Disclaimer
-
-gauge talks to an endpoint Anthropic has not published or documented. It is
-not a supported integration, it is rate-limited, and it can change shape or
-disappear without notice. Because of that, gauge never polls it directly on
-your behalf: every read goes through a local cache with a time to live and a
-backoff ladder, so a waybar module refreshing every 30 seconds does not
-translate into a request every 30 seconds. Do not build anything that
-bypasses the cache and hits the endpoint on a tight loop.
-
-The response gauge parses looks like this, trimmed to the fields it reads:
-
-```json
-{
-  "five_hour": { "utilization": 3.0, "resets_at": "2026-07-13T07:00:00.402134+00:00" },
-  "seven_day": { "utilization": 41.0, "resets_at": "2026-07-15T16:00:00.402156+00:00" }
-}
-```
-
-`utilization` is a percentage from 0 to 100, not a 0 to 1 ratio, and
-`resets_at` is an ISO 8601 timestamp. gauge probes a short list of candidate
-field names for both, so a minor rename on Anthropic's side degrades to
-stale cached data instead of a crash.
-
-## Requirements
-
-- Zig `0.17.0-dev.704+b8cb78023` or newer (this is a development snapshot of
-  Zig, not a tagged release; see [ziglang.org/download](https://ziglang.org/download/)
-  for how to get one).
-- A machine with a logged-in Claude Code CLI, since gauge reads its OAuth
-  credentials.
-
-## Build and install
-
-```bash
-zig build -Doptimize=ReleaseSafe
-install -m755 zig-out/bin/gauge ~/.local/bin/
-```
-
-Run the test suite with:
-
-```bash
-zig build test
-```
-
-## Usage
-
-```
-gauge [waybar|json|setup-waybar] [--force] [--offline] [--max-age <secs>] [--version] [--help]
-```
-
-Four subcommands, selected by the first positional argument:
-
-- (default) human readable text for a terminal.
-- `waybar` a single line of JSON matching waybar's custom module contract.
-- `json` the raw cached state as JSON, with no formatting applied.
-- `setup-waybar` wires the waybar module in automatically; see
-  [Waybar setup](#waybar-setup). Ignores `--force`, `--offline`, and
-  `--max-age`.
-
-Flags:
-
-- `--force` refresh from upstream even if the cache is fresh or backing off.
-- `--offline` never contact upstream, serve only what is cached.
-- `--max-age <secs>` cache time to live in seconds, default 180.
-- `--version` print the version and exit.
-- `--help` print usage and exit.
-
-Environment variables:
-
-- `GAUGE_STATE_DIR` where the cache file lives. Defaults to
-  `$XDG_STATE_HOME/gauge`, or `$HOME/.local/state/gauge` if `XDG_STATE_HOME`
-  is unset.
-- `GAUGE_CREDENTIALS` path to the credentials file to read. Defaults to
-  `$HOME/.claude/.credentials.json`, the file Claude Code itself writes.
-- `GAUGE_USER_AGENT` overrides the `User-Agent` header sent with the usage
-  request.
-- `GAUGE_WAYBAR_DIR` waybar config directory used by `setup-waybar`.
-  Defaults to `$HOME/.config/waybar`.
-
-## Waybar setup
-
-![gauge in waybar](docs/screenshot.png)
-
-Install gauge, then run:
+## Put it in your waybar
 
 ```bash
 gauge setup-waybar
 ```
 
-It backs up both files first and refuses, printing manual steps, if your
-config does not look like it expects. Reload waybar afterward (`pkill
-waybar; waybar &`, or your compositor's restart mechanism), and the module
-should show usage as `5h NN% · wk NN%` with a tooltip on hover.
+![gauge's waybar module reading: ✱ 5h 25% · wk 45%](docs/screenshot.png)
 
-The class turns `warn` at 70% utilization and `critical` at 90%, based on
-whichever of the two windows is higher; `stale` replaces the class when data
-is old or the last fetch failed.
+One command. It backs up your config, refuses if it doesn't recognize the
+shape, and is safe to re-run. The module goes yellow at 70%, red at 90%, and
+dims when the data is stale. Reload waybar and you're done.
 
-Run it again any time; it is idempotent, a config that already has the
-module is left untouched and reported as already set up.
+## The fine print
 
-### Manual setup
+gauge talks to an endpoint Anthropic **hasn't published**. It's unsupported,
+rate-limited, and can change shape or vanish without warning — so gauge never
+hits it more than it has to. Every read goes through a local cache with a TTL
+and a backoff ladder (5 → 10 → 20 → 30 min on repeated failure). A waybar
+refreshing every 30s does **not** mean a request every 30s. Please don't build
+anything that bypasses the cache and hammers it.
 
-If you would rather wire it in by hand, or `setup-waybar` refused because
-your config does not match a stock shape, add `"custom/gauge"` to a modules
-list in your waybar config and merge in:
+When a fetch fails, gauge keeps showing the last good number — marked stale —
+instead of breaking. It reads your OAuth token read-only and never refreshes
+it; if it's expired, run `claude` and gauge catches up on its own.
+
+<details>
+<summary><b>Usage, flags & env vars</b></summary>
+
+```
+gauge [waybar|json|setup-waybar] [flags]
+```
+
+| command | what it prints |
+|---|---|
+| *(none)* | human-readable text for a terminal |
+| `waybar` | one line of JSON for waybar's custom module |
+| `json` | the raw cached state, unformatted |
+| `setup-waybar` | wires the waybar module in for you |
+
+Flags: `--force` (refresh now, ignore backoff) · `--offline` (serve cache only)
+· `--max-age <secs>` (cache TTL, default 180) · `--version` · `--help`.
+
+Env: `GAUGE_STATE_DIR`, `GAUGE_CREDENTIALS`, `GAUGE_USER_AGENT`,
+`GAUGE_WAYBAR_DIR`. Run `gauge --help` for their defaults.
+
+Builds against a Zig dev snapshot (`0.17.0-dev.704+b8cb78023` or newer).
+`zig build test` runs the suite.
+
+</details>
+
+<details>
+<summary><b>Wiring waybar by hand</b></summary>
+
+If you'd rather not run `setup-waybar`, add `"custom/gauge"` to a modules list
+and merge in:
 
 ```jsonc
 "custom/gauge": {
@@ -138,7 +87,7 @@ list in your waybar config and merge in:
 }
 ```
 
-Style the module's states in your waybar CSS:
+Then style its states:
 
 ```css
 #custom-gauge { padding: 0 8px; }
@@ -147,38 +96,7 @@ Style the module's states in your waybar CSS:
 #custom-gauge.stale { opacity: 0.6; }
 ```
 
-Reload waybar after wiring both in.
-
-## Failure behavior
-
-gauge is built to degrade rather than break. A few rules govern that:
-
-- **Stale serving.** If a refresh fails for any reason, gauge keeps
-  serving the last successful snapshot rather than an error or a blank
-  gauge. Once that cached snapshot is old enough or its last fetch failed,
-  it is marked stale (the waybar `stale` CSS class, or a `(stale)` suffix in
-  human output), but it is still shown.
-- **Backoff ladder.** A failed refresh schedules the next attempt further
-  out: 5, 10, 20, then 30 minutes, escalating on each consecutive failure
-  and capping at 30 minutes so a persistent outage never grows the delay
-  without bound. `--force` bypasses backoff for a manual retry.
-- **No token refresh.** gauge reads the OAuth access token from your Claude
-  Code credentials file and never writes to it or refreshes it. If the
-  token has expired, gauge reports an auth error and backs off; run
-  `claude` normally to refresh it.
-
-Internally, the cache has a time to live of 180 seconds by default
-(`--max-age` overrides it), and concurrent invocations coordinate through a
-lock file (`state.lock` in the state directory) so two processes racing a
-refresh at the same moment do not both hit the network: the one that loses
-the lock just serves whatever is cached. Writes to the state file are
-atomic, a temp file written and renamed into place, so a reader never sees a
-partially written cache.
-
-Exit codes: `0` whenever a state renders, which for waybar mode is always
-true (there is no first-run state where waybar shows nothing), and `2` for
-a bad command line or, in the non-waybar modes, for a first run with no
-cached data and no successful fetch yet.
+</details>
 
 ## License
 
