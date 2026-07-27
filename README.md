@@ -14,7 +14,7 @@ It reads the same 5-hour and 7-day rate-limit windows as Claude Code's
 Needs [Zig](https://ziglang.org/download/) and a logged-in Claude Code.
 
 ```bash
-git clone https://github.com/moesy/gauge
+git clone https://github.com/bijoulabs/gauge
 cd gauge
 zig build -Doptimize=ReleaseSafe
 install -m755 zig-out/bin/gauge ~/.local/bin/
